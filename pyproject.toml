@@ -16,14 +16,16 @@ loguru = ">=0.7"
 # for parsing version
 toml = ">=0.10"
 python-dotenv = "*"
+telethon = "^1.38.1"
+motor = "^3.6.0"
+pydantic = ">=2"            # Data validation and settings management
+pydantic-settings = ">=2"   # Pydantic settings management
 
 [tool.poetry.group.extras.dependencies]
 # dependencies for extra features
 
 # Main
 ## Pydantic
-#pydantic = ">=2"            # Data validation and settings management
-#pydantic-settings = ">=2"   # Pydantic settings management
 
 # git ops
 #PyGithub = "*"              # GitHub API client
@@ -73,6 +75,8 @@ python-dotenv = "*"
 #paramiko = "*"              # SSH2 protocol library
 #scp = "*"                   # Secure copy
 #pymorphy2 = "*"             # Morphological analyzer
+matplotlib = "^3.10.0"
+numpy = "^2.2.1"
 
 [tool.poetry.group.test.dependencies]
 pytest = ">=6"

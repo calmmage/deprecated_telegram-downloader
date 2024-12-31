@@ -598,37 +598,6 @@ async def main(debug: bool = False):
 # endregion 1
 
 
-# region 2 - connection to telethon, session
-async def get_telethon_client() -> TelegramClient:
-
-    # Example initialization:
-    SESSIONS_DIR = Path("sessions")
-    SESSIONS_DIR.mkdir(exist_ok=True)
-    TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID")
-    if TELEGRAM_API_ID is None:
-        raise ValueError("TELEGRAM_API_ID is not set")
-    TELEGRAM_API_ID = int(TELEGRAM_API_ID)
-    TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
-    if TELEGRAM_API_HASH is None:
-        raise ValueError("TELEGRAM_API_HASH is not set")
-    telethon_manager = TelethonClientManager(
-        storage_mode=StorageMode.TO_DISK,
-        api_id=TELEGRAM_API_ID,
-        api_hash=TELEGRAM_API_HASH,
-        sessions_dir=SESSIONS_DIR,
-    )
-
-    user_id = os.getenv("TELEGRAM_USER_ID")
-
-    # Get client for user
-    client = await telethon_manager.get_telethon_client(int(user_id))
-
-    if not client:
-        raise ValueError("Failed to get client")
-
-    return client
-
-
 # region 4
 # from draft_3.model_message_donwload_config import MessageDownloadConfig, ChatCategoryConfig
 

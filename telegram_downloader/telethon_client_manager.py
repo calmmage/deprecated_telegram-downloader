@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from loguru import logger
+from pydantic import Field
+from pydantic_settings import BaseSettings
 from telethon import TelegramClient
 
 from telegram_downloader.utils import setup_logger
@@ -15,16 +17,28 @@ class StorageMode(str, Enum):
     TO_DISK = "to_disk"
 
 
+class TelethonClientManagerEnvSettings(BaseSettings):
+    storage_mode: StorageMode = Field(default=StorageMode.TO_DISK)
+    api_id: int = Field(default=0)
+    api_hash: str = Field(default="")
+    sessions_dir: Path = Field(default=Path("sessions"))
+
+    class Config:
+        env_file = ".env"
+        ignore_extra = True
+
+
 class TelethonClientManager:
-    def __init__(self, storage_mode: StorageMode, api_id: int, api_hash: str, sessions_dir: Path):
-        self.storage_mode = storage_mode
-        self.api_id = api_id
-        self.api_hash = api_hash
-        self.sessions_dir = sessions_dir
+    def __init__(self, **kwargs):
+        self.env = TelethonClientManagerEnvSettings(**kwargs)
+        self.storage_mode = self.env.storage_mode
+        self.api_id = self.env.api_id
+        self.api_hash = self.env.api_hash
+        self.sessions_dir = self.env.sessions_dir
         self.sessions_dir.mkdir(exist_ok=True)
         self.clients: Dict[int, TelegramClient] = {}
-        logger.debug(f"TelethonManager initialized with storage_mode: {storage_mode}")
-        logger.debug(f"TelethonManager initialized with sessions dir: {sessions_dir}")
+        logger.debug(f"TelethonManager initialized with storage_mode: {self.storage_mode}")
+        logger.debug(f"TelethonManager initialized with sessions dir: {self.sessions_dir}")
 
     async def get_telethon_client(self, user_id: int) -> TelegramClient:
         logger.debug(
@@ -34,6 +48,8 @@ class TelethonClientManager:
             return await self._get_telethon_client_from_disk(user_id)
         elif self.storage_mode == StorageMode.TO_DATABASE:
             return await self._get_telethon_client_from_database(user_id)
+        else:
+            raise ValueError(f"Invalid storage mode: {self.storage_mode}")
 
     # region trajectory 1 save and load conn from disk
     async def _get_telethon_client_from_disk(self, user_id: int) -> TelegramClient:
@@ -46,9 +62,7 @@ class TelethonClientManager:
             return await self._create_new_telethon_client_and_save_to_disk(user_id)
 
     # 2 - create new conn from scratch -> save conn to disk
-    async def _create_new_telethon_client_and_save_to_disk(
-        self, user_id: int
-    ) -> Optional[TelegramClient]:
+    async def _create_new_telethon_client_and_save_to_disk(self, user_id: int) -> TelegramClient:
         session_key = self.sessions_dir / f"user_{user_id}"
         session_file = session_key.with_suffix(".session")
         logger.debug(f"Creating new telethon client for user {user_id} at {session_file}")
@@ -154,7 +168,7 @@ class TelethonClientManager:
     # endregion trajectory 1
 
     # region trajectory 2 save conn to db
-    async def _get_telethon_client_from_database(self, user_id: int) -> Optional[TelegramClient]:
+    async def _get_telethon_client_from_database(self, user_id: int) -> TelegramClient:
         logger.debug(f"Attempting to get telethon client from database for user {user_id}")
         if await self._check_if_conn_is_present_in_db(user_id):
             logger.debug(f"Found existing connection in database for user {user_id}")
@@ -166,15 +180,13 @@ class TelethonClientManager:
             return await self._create_new_telethon_client_and_save_to_db(user_id)
 
     # 5 - create new conn from scratch -> save conn to db
-    async def _create_new_telethon_client_and_save_to_db(
-        self, user_id: int
-    ) -> Optional[TelegramClient]:
+    async def _create_new_telethon_client_and_save_to_db(self, user_id: int) -> TelegramClient:
         # This is a placeholder - you'll need to implement the database storage logic
         logger.debug("Database storage not implemented yet")
         raise NotImplementedError("Database storage not implemented yet")
 
     # 6 - load conn from db
-    async def _load_conn_from_db(self, user_id: int) -> Optional[TelegramClient]:
+    async def _load_conn_from_db(self, user_id: int) -> TelegramClient:
         # This is a placeholder - you'll need to implement the database loading logic
         logger.debug("Database loading not implemented yet")
         raise NotImplementedError("Database loading not implemented yet")
@@ -187,13 +199,13 @@ class TelethonClientManager:
 
     # endregion trajectory 2
 
-    async def disconnect_all(self):
-        """Disconnect all clients"""
-        logger.debug(f"Disconnecting all clients ({len(self.clients)} total)")
-        for client in self.clients.values():
-            await client.disconnect()
-        self.clients.clear()
-        logger.debug("All clients disconnected")
+    # async def disconnect_all(self):
+    #     """Disconnect all clients"""
+    #     logger.debug(f"Disconnecting all clients ({len(self.clients)} total)")
+    #     for client in self.clients.values():
+    #         await client.disconnect()
+    #     self.clients.clear()
+    #     logger.debug("All clients disconnected")
 
 
 async def main(debug: bool = False):

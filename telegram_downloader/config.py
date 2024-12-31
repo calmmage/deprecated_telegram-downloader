@@ -10,6 +10,8 @@ class TelegramDownloaderEnvSettings(BaseSettings):
     # Telegram API credentials
     TELEGRAM_API_ID: str | None = None
     TELEGRAM_API_HASH: str | None = None
+    TELEGRAM_USER_ID: str = Field(default="291560340")
+
     # Optional database connection if needed
     MONGO_CONN_STR: str | None = None
     MONGO_DB_NAME: str = Field(default="telegram-messages-dec-2024")
@@ -49,7 +51,8 @@ class TelegramDownloaderConfig(BaseModel):
     bots: ChatCategoryConfig = Field(default_factory=ChatCategoryConfig)
 
     @classmethod
-    def from_yaml(cls, path: Path) -> "TelegramDownloaderConfig":
+    def from_yaml(cls, path: Path, **kwargs) -> "TelegramDownloaderConfig":
         with open(path) as f:
             config_dict = yaml.safe_load(f)
+        config_dict.update(kwargs)
         return cls(**config_dict)

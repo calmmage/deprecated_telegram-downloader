@@ -4,20 +4,22 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
-from _to_migrate import get_chats, get_database, get_telethon_client
+from _to_migrate import get_chats
 from dotenv import load_dotenv
 from loguru import logger
 from pymongo import MongoClient
 from telethon import TelegramClient
+from telethon.types import Message
 from tqdm import tqdm
 from tqdm.asyncio import tqdm as atqdm
 
-from telegram_downloader.chat_data import ChatData
 from telegram_downloader.config import (
     ChatCategoryConfig,
     TelegramDownloaderConfig,
     TelegramDownloaderEnvSettings,
 )
+from telegram_downloader.data_model import ChatData
+from telegram_downloader.telethon_client_manager import StorageMode, TelethonClientManager
 from telegram_downloader.utils import setup_logger
 
 
@@ -32,15 +34,16 @@ class TelegramDownloader:
     # 5. save messages to a database
     """
 
-    def __init__(self, config_path: Path | str = Path("config.yaml")):
+    def __init__(self, config_path: Path | str = Path("config.yaml"), **kwargs):
         # Load environment variables
-        self.env = TelegramDownloaderEnvSettings()
+        self.env = TelegramDownloaderEnvSettings(**kwargs)
 
         # Load YAML config
         config_path = Path(config_path)
-        self.config = TelegramDownloaderConfig.from_yaml(config_path)
+        self.config = TelegramDownloaderConfig.from_yaml(config_path, **kwargs)
 
         self._db = None
+        self._telethon_client = None
 
     def run(self):
 
@@ -134,7 +137,9 @@ class TelegramDownloader:
     #     logger.debug("Config loaded successfully")
     #     return config
 
-    def _pick_chat_config(self, chat: ChatData, config: TelegramDownloaderConfig):
+    def _pick_chat_config(
+        self, chat: ChatData, config: TelegramDownloaderConfig
+    ) -> ChatCategoryConfig:
         logger.debug(f"Picking config for chat: {chat.name}")
         logger.debug(f"Chat category: {chat.entity_category}")
 
@@ -159,8 +164,7 @@ class TelegramDownloader:
             logger.debug("Selected: private chat config")
             return config.private_chats
         else:
-            logger.warning(f"No config found for {chat.entity_category=}")
-            return None
+            raise ValueError(f"Invalid chat category: {chat.entity_category}")
 
     async def _download_messages(
         self, client: TelegramClient, chat: ChatData, chat_config: ChatCategoryConfig
@@ -195,6 +199,21 @@ class TelegramDownloader:
             logger.warning(f"Skipping large chat {chat.name}")
             return []
 
+        messages = await self._load_message_range(chat, min_date=min_date, **kwargs)
+
+        logger.info(f"Downloaded {len(messages)} messages from {chat.name}")
+        return messages
+
+    async def get_telethon_client(self) -> TelegramClient:
+        if self._telethon_client is None:
+            self._telethon_client = await self._get_telethon_client()
+        return self._telethon_client
+
+    async def _load_message_range(
+        self, chat: ChatData, min_date: datetime, **kwargs
+    ) -> List[Message]:
+        client = await self.get_telethon_client()
+
         messages = []
         try:
             logger.debug("Starting message iteration")
@@ -202,6 +221,7 @@ class TelegramDownloader:
                 client.iter_messages(chat.entity, **kwargs),
                 desc=f"Downloading messages for chat {chat.name}",
             ):
+
                 # Skip messages older than min_date
                 if min_date and message.date < min_date:
                     logger.debug(f"Reached message older than min_date ({message.date}), stopping")
@@ -219,10 +239,8 @@ class TelegramDownloader:
 
             return []
 
-        logger.info(f"Downloaded {len(messages)} messages from {chat.name}")
         return messages
 
-    # region 1 - database
     def _get_database(self):
         # option 1 - mongodb pymongo client
 
@@ -311,3 +329,32 @@ class TelegramDownloader:
 
         collection.insert_many(messages_json)
         logger.debug("Messages inserted successfully")
+
+    async def _get_telethon_client(self) -> TelegramClient:
+
+        # Example initialization:
+        SESSIONS_DIR = Path("sessions")
+        SESSIONS_DIR.mkdir(exist_ok=True)
+        TELEGRAM_API_ID = self.env.TELEGRAM_API_ID
+        if TELEGRAM_API_ID is None:
+            raise ValueError("TELEGRAM_API_ID is not set")
+        TELEGRAM_API_ID = int(TELEGRAM_API_ID)
+        TELEGRAM_API_HASH = self.env.TELEGRAM_API_HASH
+        if TELEGRAM_API_HASH is None:
+            raise ValueError("TELEGRAM_API_HASH is not set")
+        telethon_manager = TelethonClientManager(
+            storage_mode=StorageMode.TO_DISK,
+            api_id=TELEGRAM_API_ID,
+            api_hash=TELEGRAM_API_HASH,
+            sessions_dir=SESSIONS_DIR,
+        )
+
+        user_id = self.env.TELEGRAM_USER_ID
+
+        # Get client for user
+        client = await telethon_manager.get_telethon_client(int(user_id))
+
+        if not client:
+            raise ValueError("Failed to get client")
+
+        return client

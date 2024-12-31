@@ -1,0 +1,3 @@
+Main plan for now:
+a) add a new feature: check ... 
+b) refactor old code into the new one

@@ -16,11 +16,13 @@ class ChatData:
         if isinstance(last_message_date, str):
             last_message_date = datetime.fromisoformat(last_message_date)
         self.last_message_date = last_message_date
+        self.finished_downloading = False
 
     def to_json(self):
         data = {
             "entity": self.entity.to_json(),
             "last_message_date": self.last_message_date.isoformat(),
+            "finished_downloading": self.finished_downloading,
         }
         return data
 
@@ -30,7 +32,11 @@ class ChatData:
         entity_type = entity_data.pop("_")
         entity = cls.load_entity(entity_type, entity_data)
         last_message_date = datetime.fromisoformat(data["last_message_date"])
-        return cls(entity, last_message_date)
+        return cls(
+            entity=entity,
+            last_message_date=last_message_date,
+            finished_downloading=data["finished_downloading"],
+        )
 
     @classmethod
     def load_entity(cls, entity_type, entity_data):

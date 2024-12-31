@@ -1,4 +1,8 @@
+"""Main module."""
+
+
 def main():
+    """Entry point."""
     print("Hello, world!")
 
 

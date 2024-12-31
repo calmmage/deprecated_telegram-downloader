@@ -1,9 +1,13 @@
 [tool.poetry]
-name = "project-name"
+name = "telegram-downloader"
 version = "0.0.1"
 description = ""
 authors = ["Petr Lavrov <calmmage@gmail.com>"]
 readme = "README.md"
+packages=[
+    { include = "telegram_downloader", from = "." },
+]
+
 
 [tool.poetry.dependencies]
 python = ">=3.11,<4.0"
@@ -73,6 +77,16 @@ python-dotenv = "*"
 [tool.poetry.group.test.dependencies]
 pytest = ">=6"
 #pytest-mongodb = "*"
+black = {extras = ["jupyter"], version = "^24.10.0"}
+flake8 = "^7.1.1"
+flake8-docstrings = "^1.7.0"
+flake8-bugbear = "^24.12.12"
+flake8-comprehensions = "^3.16.0"
+flake8-simplify = "^0.21.0"
+isort = "^5.13.2"
+vulture = "^2.14"
+pytest-cov = "^6.0.0"
+pyupgrade = "^3.19.1"
 
 [tool.poetry.group.docs.dependencies]
 #mkdocs = ">=1.6"
@@ -102,3 +116,29 @@ version = "0.3.0"  # optimize pyproject dependencies
 url = "https://github.com/calmmage/python-project-template.git"
 author = "Petr Lavrov <petrlavrov@calmmage.com>"
 description = "A template for creating a bot using calmapp and bot-lib"
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 100
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+skip = [".git", "venv", ".env", "__pycache__"]
+# known_first_party = ["your_package_name"]  # Replace with your package name
+# known_third_party = [
+#     "aiogram",
+#     "fastapi",
+#     "pydantic",
+#     "pytest",
+#     "tqdm",
+#     "loguru"
+# ]
+# sections = [
+#     "FUTURE",
+#     "STDLIB",
+#     "THIRDPARTY",
+#     "FIRSTPARTY",
+#     "LOCALFOLDER"
+# ]

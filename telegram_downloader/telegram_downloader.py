@@ -42,6 +42,7 @@ class TelegramDownloader:
 
         self._db = None
         self._telethon_client = None
+        self.reset_properties()
 
     async def main(self, ignore_finished=False, chat_sample_size=None):
         """
@@ -149,29 +150,19 @@ class TelegramDownloader:
         logger.debug("Chats saved successfully")
 
     # ✅
-    def _save_chats_to_db(self, chats: List[ChatData], collection_name: str | None = None):
-        # Use collection name from env settings if not provided
-        if collection_name is None:
-            collection_name = self.env.MONGO_CHATS_COLLECTION
-
+    def _save_chats_to_db(self, chats: List[ChatData]):
         for chat in chats:
-            self.db[collection_name].update_one(
+            self.chats_collection.update_one(
                 {"id": chat.id},  # Use id as the key for upsert
                 {"$set": chat.to_dict()},
                 upsert=True,
             )
-
         logger.debug(f"Upserted {len(chats)} chats to db")
 
     # ✅
-    def _load_chats_from_db(self, collection_name: str | None = None) -> List[ChatData]:
-        # Use collection name from env settings if not provided
-        if collection_name is None:
-            collection_name = self.env.MONGO_CHATS_COLLECTION
-
-        telegram_chats_collection = self.db[collection_name]
-        chats = [ChatData(**item) for item in telegram_chats_collection.find()]
-        logger.info(f"Loaded {len(chats)} entities from db collection {collection_name}")
+    def _load_chats_from_db(self) -> List[ChatData]:
+        chats = [ChatData(**item) for item in self.chats_collection.find()]
+        logger.info(f"Loaded {len(chats)} chats from database")
         return chats
 
     # ✅
@@ -386,13 +377,26 @@ class TelegramDownloader:
             Returns (None, None) if no messages found
         """
         logger.debug(f"Getting message range for chat {chat_id}")
-        collection = self.db[self.env.MONGO_MESSAGES_COLLECTION]
+        collection = self.messages_collection
+
+        chat_data = self.chats[chat_id]
+
+        if chat_data.entity_category == "channel":
+            query = {"peer_id": {"_": "PeerChannel", "channel_id": chat_id}}
+        elif chat_data.entity_category == "private chat":
+            query = {"peer_id": {"_": "PeerUser", "user_id": chat_id}}
+        elif chat_data.entity_category == "group":
+            query = {"peer_id": {"_": "PeerChat", "chat_id": chat_id}}
+        elif chat_data.entity_category == "bot":
+            query = {"peer_id": {"_": "PeerBot", "user_id": chat_id}}
+        else:
+            raise ValueError(f"Unknown chat type: {chat_data.entity_category}")
 
         # Find min timestamp
-        min_result = collection.find({"chat_id": chat_id}, {"date": 1}).sort("date", 1).limit(1)
+        min_result = collection.find(query, {"date": 1}).sort("date", 1).limit(1)
 
         # Find max timestamp
-        max_result = collection.find({"chat_id": chat_id}, {"date": 1}).sort("date", -1).limit(1)
+        max_result = collection.find(query, {"date": 1}).sort("date", -1).limit(1)
 
         min_doc = next(min_result, None)
         max_doc = next(max_result, None)
@@ -591,22 +595,36 @@ class TelegramDownloader:
             self._db = self._get_database()
         return self._db
 
-    def _save_messages(self, messages):
+    def _save_messages(self, messages: List[Message]):
         """Save messages to a database"""
         if self.storage_mode == StorageMode.MONGO:
             logger.debug("Starting message save process")
 
             logger.debug("Getting database connection")
-            collection = self.db[self.env.MONGO_MESSAGES_COLLECTION]
-            logger.debug(f"Got collection: {self.env.MONGO_MESSAGES_COLLECTION}")
+            collection = self.messages_collection
 
             # make messages to json format
             logger.debug("Converting messages to JSON")
-            messages_json = [message.to_dict() for message in messages]
+            messages_json = []
+            for message in messages:
+                message_dict = message.to_dict()
+                # Extract chat_id from peer_id based on the type
+                peer_id = message_dict.get("peer_id", {})
+                if peer_id.get("_") == "PeerChannel":
+                    chat_id = peer_id.get("channel_id")
+                elif peer_id.get("_") == "PeerUser":
+                    chat_id = peer_id.get("user_id")
+                elif peer_id.get("_") == "PeerChat":
+                    chat_id = peer_id.get("chat_id")
+                else:
+                    logger.warning(f"Unknown peer_id type: {peer_id.get('_')}")
+                    chat_id = None
+
+                message_dict["chat_id"] = chat_id
+                messages_json.append(message_dict)
             logger.debug(f"Converted {len(messages_json)} messages to JSON")
 
             logger.debug("Inserting messages into database")
-
             collection.insert_many(messages_json)
             logger.debug("Messages inserted successfully")
         else:
@@ -908,3 +926,159 @@ class TelegramDownloader:
     # # Image(filename=str(plot_path))
 
     # endregion plot_stats
+
+    # region access utils
+    @property
+    def messages_raw(self):
+        if self._messages_raw is None:
+            self._messages_raw = list(self.messages_collection.find())
+        return self._messages_raw
+
+    @property
+    def messages_collection(self):
+        return self.db[self.env.MONGO_MESSAGES_COLLECTION]
+
+    @property
+    def chats_raw(self):
+        if self._chats_raw is None:
+            self._chats_raw = list(self.chats_collection.find())
+        return self._chats_raw
+
+    @property
+    def chats_collection(self):
+        return self.db[self.env.MONGO_CHATS_COLLECTION]
+
+    @property
+    def chats(self):
+        if self._chats is None:
+            self._chats = {}
+            for item in self.chats_raw:
+                item.pop("_id")
+                self._chats[item["id"]] = ChatData(**item)
+        return self._chats
+
+    @property
+    def messages(self):
+        if self._messages is None:
+            # todo: drop chat_id before init
+            self._messages = []
+            for item in self.messages_raw:
+                item.pop("chat_id")
+                self._messages.append(Message(**item))
+        return self._messages
+
+    def _get_message_chat_id(self, message: Message):
+        try:
+            return message.peer_id.channel_id
+        except:
+            pass
+        try:
+            return message.peer_id.user_id
+        except:
+            pass
+        try:
+            return message.peer_id.chat_id
+        except:
+            pass
+        raise ValueError(f"Unknown peer_id type: {message.peer_id}")
+
+    def _get_message_chat_id_from_raw(self, message: dict):
+        peer_id = message.get("peer_id", {})
+        if peer_id.get("_") == "PeerChannel":
+            chat_id = peer_id.get("channel_id")
+        elif peer_id.get("_") == "PeerUser":
+            chat_id = peer_id.get("user_id")
+        elif peer_id.get("_") == "PeerChat":
+            chat_id = peer_id.get("chat_id")
+        else:
+            raise ValueError(f"Unknown peer_id type: {peer_id.get('_')}")
+        return chat_id
+
+    def reset_properties(self):
+        self._messages = None
+        self._messages_raw = None
+        self._chats = None
+        self._chats_raw = None
+        self._chat_names = None
+
+    # step 2
+    @property
+    def chat_names(self):
+        if self._chat_names is None:
+            self._chat_names = {chat_id: chat.name for chat_id, chat in self.chats.items()}
+        return self._chat_names
+
+    # chat_names = {}
+    # for chat_id, chat in chats.items():
+    #     chat_names[chat_id] = chat.name
+
+    # step 3
+    def find_chat(self, key):
+        res = {}
+        for chat_id, chat_name in self.chat_names.items():
+            if key in chat_name:
+                res[chat_id] = chat_name
+        return res
+
+    # chats_1 = find_chat("Лавровы и")
+    # chats_1
+    # len(chats_1)
+
+    def resolve_chat(self, key):
+        if key in self.chat_names:
+            return key
+
+        candidates = self.find_chat(key)
+        if len(candidates) == 1:
+            return list(candidates.keys())[0]
+        else:
+            raise ValueError(f"Multiple candidates found for {key}: {candidates}")
+
+    # resolve_chat("Лавровы и Кремер")
+
+    def get_chat_messages(self, chat_key):
+        # todo: load newer messages from the client
+        chat_id = self.resolve_chat(chat_key)
+        chat_data = self.chats[chat_id]
+        if chat_data.entity_category == "channel":
+            query = {"peer_id": {"_": "PeerChannel", "channel_id": chat_id}}
+        elif chat_data.entity_category == "private chat":
+            query = {"peer_id": {"_": "PeerUser", "user_id": chat_id}}
+        elif chat_data.entity_category == "group":
+            query = {"peer_id": {"_": "PeerChat", "chat_id": chat_id}}
+        elif chat_data.entity_category == "bot":
+            query = {"peer_id": {"_": "PeerBot", "user_id": chat_id}}
+        else:
+            raise ValueError(f"Unknown chat type: {chat_data.entity_category}")
+        messages = self.messages_collection.find(query)
+        messages = list(messages)
+        return messages
+
+    def _convert_chats_to_df(self, raw_chats):
+        # step 1: flatten the data
+
+        # step 2: create pandas df
+
+        # todo: step 3 - filter out unwanted columns
+        pass
+
+    def _convert_messages_to_df(self, raw_messages):
+        # step 1: flatten the data
+
+        # step 2: create pandas df
+
+        # todo: step 3 - filter out unwanted columns
+        pass
+
+    # get_chat_messages("Лавровы и Кремер")
+    # m = get_chat_messages(893942447)
+    # m = get_chat_messages(1585809155)
+
+    # m = get_chat_messages(1125045120)
+
+    # chat_names[1125045120]
+
+    # item["peer_id"]
+    # {'_': 'PeerUser', 'user_id': 322324998}
+
+    # endregion access utils

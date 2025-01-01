@@ -24,6 +24,13 @@ class TelegramDownloaderEnvSettings(BaseSettings):
     MONGO_CONN_STR: str | None = None
     MONGO_DB_NAME: str = Field(default="telegram-messages-dec-2024")
 
+    # MongoDB Collections
+    MONGO_MESSAGES_COLLECTION: str = "telegram_messages"
+    MONGO_CHATS_COLLECTION: str = "telegram_chats"
+    MONGO_USERS_COLLECTION: str = "telegram_users"
+    MONGO_HEARTBEATS_COLLECTION: str = "telegram_heartbeats"
+    MONGO_APP_DATA_COLLECTION: str = "telegram_downloader_app_data"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

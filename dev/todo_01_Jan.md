@@ -13,7 +13,7 @@
 
 
 - [ ] figure out logging. 1) I want minimalistic logging by default. 2) I want to have cool info 3) debug logging
-  - [ ] new flag: --silent
+  - [x] new flag: --silent -> set level to warning
   - [ ] use info for all cool info
   - [ ] report the messages that are already in the db
   - [ ] use debug for ALL debug info and steps
@@ -21,7 +21,6 @@
 
 - [ ] sanity check message duplicates (only complete duplicates - allow changed edits history)
 - [ ] add media downloading -> aws s3
-
 
 - [ ] fix the correct way to find existing messages for the chat
   - [ ] try in the notebook

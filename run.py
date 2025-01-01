@@ -14,6 +14,9 @@ def main():
     parser = argparse.ArgumentParser(description="Telegram Downloader")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument(
+        "--silent", action="store_true", help="Minimize logging output (WARNING level)"
+    )
+    parser.add_argument(
         "--config", type=str, default="resources/config_archive.yaml", help="Path to config file"
     )
     parser.add_argument("--chat-sample", type=int, help="Number of random chats to process")
@@ -22,14 +25,21 @@ def main():
     )
     args = parser.parse_args()
 
+    # Set log level based on flags
+    if args.debug:
+        log_level = "DEBUG"
+    elif args.silent:
+        log_level = "WARNING"
+    else:
+        log_level = "INFO"
+
     logger.debug("Setting up logger...")
-    setup_logger(logger, level="DEBUG" if args.debug else "INFO")
+    setup_logger(logger, level=log_level)
 
     downloader = TelegramDownloader(config_path=args.config)
 
     asyncio.run(
         downloader.main(
-            # debug=args.debug
             ignore_finished=args.ignore_finished,
             chat_sample_size=args.chat_sample,
         )

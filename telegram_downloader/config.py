@@ -14,9 +14,11 @@ class StorageMode(str, Enum):
 
 class TelegramDownloaderEnvSettings(BaseSettings):
     # Telegram API credentials
-    TELEGRAM_API_ID: str | None = None
-    TELEGRAM_API_HASH: str | None = None
+    TELEGRAM_API_ID: int  # | None = None
+    TELEGRAM_API_HASH: str  # | None = None
     TELEGRAM_USER_ID: str = Field(default="291560340")
+
+    TELETHON_SESSION_STR: str | None = None
 
     # Optional database connection if needed
     MONGO_CONN_STR: str | None = None
@@ -25,6 +27,7 @@ class TelegramDownloaderEnvSettings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "allow"
 
 
 class SizeThresholds(BaseModel):

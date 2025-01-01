@@ -1,4 +1,4 @@
-storage_mode: both
+storage_mode: mongo
 
 size_thresholds:
   max_members_group: 1000

@@ -21,7 +21,8 @@ class TelethonClientManagerEnvSettings(BaseSettings):
 
     class Config:
         env_file = ".env"
-        ignore_extra = True
+        env_file_encoding = "utf-8"
+        extra = "allow"
 
 
 class TelethonClientManager:

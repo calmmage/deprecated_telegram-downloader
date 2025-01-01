@@ -1,6 +1,7 @@
 import asyncio
 import json
 import random
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
@@ -9,7 +10,8 @@ from dotenv import load_dotenv
 from loguru import logger
 from pymongo import MongoClient
 from telethon import TelegramClient
-from telethon.types import Message
+from telethon.sessions import StringSession
+from telethon.types import Dialog, Message
 from tqdm import tqdm
 from tqdm.asyncio import tqdm as atqdm
 
@@ -392,6 +394,34 @@ class TelegramDownloader:
         else:
             raise ValueError(f"Invalid chat category: {chat.entity_category}")
 
+    def _get_chat_message_range(self, chat_id: int) -> tuple[datetime | None, datetime | None]:
+        """Get the min and max timestamps of messages for a chat in the database.
+
+        Args:
+            chat_id: The ID of the chat to check
+
+        Returns:
+            tuple[datetime | None, datetime | None]: (min_timestamp, max_timestamp)
+            Returns (None, None) if no messages found
+        """
+        logger.debug(f"Getting message range for chat {chat_id}")
+        collection = self.db["telegram_messages"]
+
+        # Find min timestamp
+        min_result = collection.find({"chat_id": chat_id}, {"date": 1}).sort("date", 1).limit(1)
+
+        # Find max timestamp
+        max_result = collection.find({"chat_id": chat_id}, {"date": 1}).sort("date", -1).limit(1)
+
+        min_doc = next(min_result, None)
+        max_doc = next(max_result, None)
+
+        min_timestamp = min_doc["date"] if min_doc else None
+        max_timestamp = max_doc["date"] if max_doc else None
+
+        logger.debug(f"Message range for chat {chat_id}: {min_timestamp} to {max_timestamp}")
+        return min_timestamp, max_timestamp
+
     async def _download_messages(self, chat: ChatData, chat_config: ChatCategoryConfig):
         logger.debug(f"Starting message download for chat: {chat.name}")
 
@@ -399,7 +429,15 @@ class TelegramDownloader:
             logger.debug(f"Skipping chat {chat.name}: config disabled")
             return []
 
+        # Skip if chat is marked as finished downloading
+        if chat.finished_downloading:
+            logger.info(f"Skipping chat {chat.name}: marked as finished")
+            return []
+
         logger.info(f"Downloading messages from chat: {chat.name}")
+
+        # Get existing message range
+        min_timestamp, max_timestamp = self._get_chat_message_range(chat.id)
 
         # Initialize parameters for message download
         kwargs = {}
@@ -408,11 +446,13 @@ class TelegramDownloader:
         # Apply config parameters
         if chat_config.backdays:
             # Make min_date timezone-aware to match message.date
-            min_date = datetime.now(timezone.utc) - timedelta(days=chat_config.backdays)
+            config_min_date = datetime.now(timezone.utc) - timedelta(days=chat_config.backdays)
+            # Use the later of config_min_date and existing min_timestamp
+            min_date = max(config_min_date, min_timestamp) if min_timestamp else config_min_date
             logger.debug(f"Set min_date to {min_date}")
         else:
-            min_date = None
-            logger.debug("No min_date set")
+            min_date = min_timestamp
+            logger.debug(f"Using existing min_date: {min_date}")
 
         if chat_config.limit:
             kwargs["limit"] = chat_config.limit
@@ -423,18 +463,47 @@ class TelegramDownloader:
             logger.warning(f"Skipping large chat {chat.name}")
             return []
 
-        messages = await self._load_message_range(chat, min_date=min_date, **kwargs)
+        messages = []
+
+        # First pass: get newer messages from max_timestamp
+        if max_timestamp:
+            logger.debug(f"Getting messages newer than {max_timestamp}")
+            newer_messages = await self._load_message_range(
+                chat,
+                min_date=max_timestamp,
+                reverse=True,  # Get messages from newest to oldest
+                **kwargs,
+            )
+            messages.extend(newer_messages)
+
+        # Second pass: get older messages until min_date
+        older_messages = await self._load_message_range(chat, min_date=min_date, **kwargs)
+        messages.extend(older_messages)
 
         logger.info(f"Downloaded {len(messages)} messages from {chat.name}")
+
+        # If we got no messages and hit the min_date, mark chat as finished
+        if not messages and min_date:
+            logger.info(f"Marking chat {chat.name} as finished downloading")
+            chat.finished_downloading = True
+            self._save_chats_to_db([chat])
+
         return messages
 
     async def get_telethon_client(self) -> TelegramClient:
         if self._telethon_client is None:
-            self._telethon_client = await self._get_telethon_client()
+            if self.env.TELETHON_SESSION_STR:
+                self._telethon_client = TelegramClient(
+                    StringSession(self.env.TELETHON_SESSION_STR),
+                    api_id=self.env.TELEGRAM_API_ID,
+                    api_hash=self.env.TELEGRAM_API_HASH,
+                )
+            else:
+                self._telethon_client = await self._get_telethon_client()
         return self._telethon_client
 
     async def _load_message_range(
-        self, chat: ChatData, min_date: datetime, **kwargs
+        self, chat: ChatData, min_date: datetime | None, **kwargs
     ) -> List[Message]:
         client = await self.get_telethon_client()
 
@@ -535,24 +604,27 @@ class TelegramDownloader:
 
     def _save_messages(self, messages):
         """Save messages to a database"""
-        db = self.db
-        logger.debug("Starting message save process")
+        if self.storage_mode == StorageMode.MONGO:
+            logger.debug("Starting message save process")
 
-        # step 1: get a db connection - i already did this somewhere
-        logger.debug("Getting database connection")
-        collection_name = "telegram_messages"
-        collection = db[collection_name]
-        logger.debug(f"Got collection: {collection_name}")
+            # step 1: get a db connection - i already did this somewhere
+            logger.debug("Getting database connection")
+            # todo: move collection name to config
+            collection_name = "telegram_messages"
+            collection = self.db[collection_name]
+            logger.debug(f"Got collection: {collection_name}")
 
-        # make messages to json format
-        logger.debug("Converting messages to JSON")
-        messages_json = [message.to_dict() for message in messages]
-        logger.debug(f"Converted {len(messages_json)} messages to JSON")
+            # make messages to json format
+            logger.debug("Converting messages to JSON")
+            messages_json = [message.to_dict() for message in messages]
+            logger.debug(f"Converted {len(messages_json)} messages to JSON")
 
-        logger.debug("Inserting messages into database")
+            logger.debug("Inserting messages into database")
 
-        collection.insert_many(messages_json)
-        logger.debug("Messages inserted successfully")
+            collection.insert_many(messages_json)
+            logger.debug("Messages inserted successfully")
+        else:
+            raise ValueError(f"Invalid storage mode: {self.storage_mode}")
 
     async def _get_telethon_client(self) -> TelegramClient:
 
@@ -582,3 +654,271 @@ class TelegramDownloader:
             raise ValueError("Failed to get client")
 
         return client
+
+    # region Chat stats
+
+    def get_random_chat(
+        self,
+        chats: List[ChatData],
+        entity_type: str = None,  # 'group', 'channel', 'bot', 'private chat'
+        owned: bool = None,
+        recent: bool = None,
+        big: bool = None,
+        recent_threshold: timedelta = timedelta(days=30),
+        big_threshold: int = 1000,
+    ):
+        if entity_type is not None:
+            chats = [chat for chat in chats if chat.entity_category == entity_type]
+        if len(chats) == 0:
+            logger.warning(f"No chats found for {entity_type=}")
+            return None
+        if owned is not None:
+            is_owned = lambda chat: getattr(chat["entity"], "creator", False)
+            chats = [chat for chat in chats if is_owned(chat) == owned]
+            if len(chats) == 0:
+                logger.warning(f"No chats found for {entity_type=} {owned=}")
+                return None
+        if recent is not None:
+            chats = [chat for chat in chats if chat.is_recent == recent]
+            if len(chats) == 0:
+                logger.warning(f"No chats found for {entity_type=} {recent=}")
+                return None
+        if big is not None:
+            is_big = lambda chat: getattr(chat["entity"], "participants_count", 0) > big_threshold
+            chats = [chat for chat in chats if is_big(chat) == big]
+        if len(chats) == 0:
+            logger.warning(f"No chats found for {entity_type=} {owned=} {recent=} {big=}")
+            return None
+        return random.choice(chats)
+
+    def calculate_stats(
+        self,
+        chats: List[ChatData],
+        big_threshold: int = 1000,
+        recent_threshold: timedelta = timedelta(days=30),
+    ):
+        """
+        Calculate stats about chats
+
+        Basic:
+        - private messages
+        - group chats
+        - channels
+        - bots
+
+        Advanced:
+        - owned groups
+        - owned bots
+        - owned channels
+
+        Big:
+        - big groups (> 1000)
+        - big channels
+        """
+        logger.debug("Calculating chat statistics")
+        stats = defaultdict(int)
+        # Basic:
+        for chat in chats:
+            entity = chat.entity
+            last_message_date = chat.last_message_date
+
+            category = chat.entity_category
+            stats[category + "s"] += 1
+
+            # last_message_date = datetime.fromisoformat(getattr(chat, 'date', None)) if getattr(chat, 'date', None) else None
+            recent = (
+                last_message_date
+                and (datetime.now(last_message_date.tzinfo) - last_message_date) < recent_threshold
+            )
+            if recent:
+                stats[f"recent_{category}s"] += 1
+
+            owner = getattr(entity, "creator", False)
+            if owner:
+                stats[f"owned_{category}s"] += 1
+                if recent:
+                    stats[f"recent_owned_{category}s"] += 1
+
+            members = getattr(entity, "participants_count", 0)
+            if members > big_threshold:
+                stats[f"big_{category}s"] += 1
+
+        # Bonus: size / time-based stats
+        # for each of the above - count which have recent messages (last 30 days)
+        logger.debug(f"Calculated stats: {stats}")
+        return stats
+
+    async def demo_stats(self, debug: bool = False):
+        setup_logger(logger, level="DEBUG" if debug else "INFO")
+        logger.debug("Starting main function")
+        chats = await self._get_chats()
+        logger.debug("Main function completed")
+        logger.debug(f"Loaded {len(chats)} chats")
+
+        stats = self.calculate_stats(chats)
+        logger.info("Chat statistics:")
+        for key, value in stats.items():
+            logger.info(f"{key}: {value}")
+
+        random_chat = self.get_random_chat(chats, "group", recent=True, big=False)
+        logger.info(f"Random recent group: {random_chat['entity'].title}")
+
+        random_chat = self.get_random_chat(chats, "group", recent=False, big=False)
+        logger.info(f"Random old group: {random_chat['entity'].title}")
+
+        random_chat = self.get_random_chat(chats, "channel", big=False)
+        logger.info(f"Random small channel: {random_chat['entity'].title}")
+
+        random_chat = self.get_random_chat(chats, "channel", big=True)
+        logger.info(f"Random big channel: {random_chat['entity'].title}")
+
+        random_chat = self.get_random_chat(chats, "bot")
+        logger.info(f"Random bot: {random_chat['entity'].username}")
+
+        random_chat = self.get_random_chat(chats, "private chat", recent=True)
+        logger.info(f"Random private chat: {random_chat['entity'].username}")
+
+        random_chat = self.get_random_chat(chats, "private chat", recent=False)
+        logger.info(f"Random old private chat: {random_chat['entity'].username}")
+
+    # endregion chat stats
+
+    # region plot_stats
+    def plot_size_distribution(self, items, title, output_path: Path):
+
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        logger.debug(f"Plotting size distribution for {title}")
+        sizes = [getattr(item.entity, "participants_count", 0) for item in items]
+        max_size = max(sizes)
+
+        # Custom bin edges for more intuitive intervals
+        bins = [
+            1,
+            3,
+            10,
+            30,
+            100,
+            300,  # Small groups/channels
+            1000,
+            3000,
+            10000,  # Medium
+            30000,
+            100000,  # Large
+            300000,
+            1000000,  # Huge
+        ]
+
+        # Filter out empty upper bins
+        while bins[-1] > max_size * 1.1:  # Keep one empty bin for visual clarity
+            bins.pop()
+
+        plt.figure(figsize=(12, 6))
+
+        # Calculate histogram data
+        counts, edges = np.histogram(sizes, bins=bins)
+
+        # Plot bars manually with fixed width in log space
+        bar_width = 0.8  # Width in log space
+        log_edges = np.log10(edges[:-1])
+
+        plt.bar(
+            edges[:-1],
+            counts,
+            width=[edge * bar_width for edge in edges[:-1]],  # Width proportional to x position
+            align="center",
+        )
+
+        plt.xscale("log")
+
+        # Create interval labels
+        labels = [f"{bins[i]:,}-{bins[i+1]:,}" for i in range(len(bins) - 1)]
+        plt.xticks(bins[:-1], labels, rotation=45, ha="right")
+
+        # Add value labels on top of bars
+        for i, count in enumerate(counts):
+            if count > 0:  # Only label non-empty bars
+                plt.text(edges[i], count, f"{int(count)}", va="bottom", ha="center")
+
+        plt.title(f"{title} Size Distribution (n={len(items)})")
+        plt.xlabel("Number of participants")
+        plt.ylabel("Count")
+
+        # Add grid for better readability
+        plt.grid(True, alpha=0.3)
+
+        # Adjust layout to prevent label cutoff
+        plt.tight_layout()
+
+        # Save plot to file
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_path)
+        plt.close()
+
+        # Print statistics
+        print(f"\n{title} size statistics:")
+        print(f"Median size: {np.median(sizes):,.0f}")
+        print(f"Mean size: {np.mean(sizes):,.0f}")
+        print(f"Max size: {max_size:,}")
+        logger.debug(f"Finished plotting size distribution for {title}")
+
+    # # Example usage:
+    # plot_path = Path("data/plots/groups_distribution.png")
+    # plot_size_distribution(groups, 'Groups', plot_path)
+    # # To display inline in notebook:
+    # # from IPython.display import Image
+    # # Image(filename=str(plot_path))
+
+    def plot_small_size_distribution(self, items, title, output_path: Path):
+
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        logger.debug(f"Plotting small size distribution for {title}")
+        sizes = [getattr(item.entity, "participants_count", 0) for item in items]
+
+        # Custom bin edges for small groups
+        bins = list(range(1, 12))  # 1 to 11 to capture sizes 1-10
+
+        plt.figure(figsize=(10, 6))
+
+        # Calculate histogram data
+        counts, edges = np.histogram(sizes, bins=bins)
+
+        # Plot bars
+        plt.bar(range(1, 11), counts, width=0.7, align="center")
+
+        # Set x-axis ticks to whole numbers
+        plt.xticks(range(1, 11))
+
+        # Add value labels on top of bars
+        for i, count in enumerate(counts):
+            if count > 0:  # Only label non-empty bars
+                plt.text(i + 1, count, f"{int(count)}", va="bottom", ha="center")
+
+        plt.title(f"{title} Size Distribution (1-10 members, n={sum(counts)})")
+        plt.xlabel("Number of participants")
+        plt.ylabel("Count")
+
+        # Add grid for better readability
+        plt.grid(True, alpha=0.3)
+
+        # Adjust layout
+        plt.tight_layout()
+
+        # Save plot to file
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_path)
+        plt.close()
+
+        logger.debug(f"Finished plotting small size distribution for {title}")
+
+    # # Example usage:
+    # plot_path = Path("data/plots/small_groups_distribution.png")
+    # plot_small_size_distribution(groups, 'Groups', plot_path)
+    # # To display inline in notebook:
+    # # from IPython.display import Image
+    # # Image(filename=str(plot_path))
+
+    # endregion plot_stats

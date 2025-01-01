@@ -1,9 +1,15 @@
+from enum import Enum
 from pathlib import Path
 from typing import List, Optional
 
 import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
+
+
+class StorageMode(str, Enum):
+    MONGO = "mongo"
+    LOCAL = "local"
 
 
 class TelegramDownloaderEnvSettings(BaseSettings):
@@ -41,7 +47,9 @@ class ChatCategoryConfig(BaseModel):
 
 
 class TelegramDownloaderConfig(BaseModel):
-    # todo: unused for now
+    # Add storage_mode field at the top level
+    storage_mode: StorageMode = Field(default=StorageMode.MONGO)
+
     size_thresholds: SizeThresholds = Field(default_factory=SizeThresholds)
     owned_groups: ChatCategoryConfig = Field(default_factory=ChatCategoryConfig)
     owned_channels: ChatCategoryConfig = Field(default_factory=ChatCategoryConfig)

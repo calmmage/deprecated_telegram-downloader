@@ -9,19 +9,15 @@ from pydantic import Field
 from pydantic_settings import BaseSettings
 from telethon import TelegramClient
 
+from telegram_downloader.config import StorageMode
 from telegram_downloader.utils import setup_logger
 
 
-class StorageMode(str, Enum):
-    TO_DATABASE = "to_database"
-    TO_DISK = "to_disk"
-
-
 class TelethonClientManagerEnvSettings(BaseSettings):
-    storage_mode: StorageMode = Field(default=StorageMode.TO_DISK)
-    api_id: int = Field(default=0)
-    api_hash: str = Field(default="")
-    sessions_dir: Path = Field(default=Path("sessions"))
+    TELEGRAM_API_ID: int = Field()
+    TELEGRAM_API_HASH: str = Field()
+    SESSIONS_DIR: Path = Field(default=Path("sessions"))
+    MONGO_CONN_STR: str | None = None
 
     class Config:
         env_file = ".env"
@@ -29,12 +25,12 @@ class TelethonClientManagerEnvSettings(BaseSettings):
 
 
 class TelethonClientManager:
-    def __init__(self, **kwargs):
+    def __init__(self, storage_mode: StorageMode = StorageMode.LOCAL, **kwargs):
         self.env = TelethonClientManagerEnvSettings(**kwargs)
-        self.storage_mode = self.env.storage_mode
-        self.api_id = self.env.api_id
-        self.api_hash = self.env.api_hash
-        self.sessions_dir = self.env.sessions_dir
+        self.storage_mode = storage_mode
+        self.api_id = self.env.TELEGRAM_API_ID
+        self.api_hash = self.env.TELEGRAM_API_HASH
+        self.sessions_dir = self.env.SESSIONS_DIR
         self.sessions_dir.mkdir(exist_ok=True)
         self.clients: Dict[int, TelegramClient] = {}
         logger.debug(f"TelethonManager initialized with storage_mode: {self.storage_mode}")
@@ -44,9 +40,9 @@ class TelethonClientManager:
         logger.debug(
             f"Getting telethon client for user {user_id} with storage mode {self.storage_mode}"
         )
-        if self.storage_mode == StorageMode.TO_DISK:
+        if self.storage_mode == StorageMode.LOCAL:
             return await self._get_telethon_client_from_disk(user_id)
-        elif self.storage_mode == StorageMode.TO_DATABASE:
+        elif self.storage_mode == StorageMode.MONGO:
             return await self._get_telethon_client_from_database(user_id)
         else:
             raise ValueError(f"Invalid storage mode: {self.storage_mode}")
@@ -220,7 +216,7 @@ async def main(debug: bool = False):
     TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID"))
     TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
     telethon_manager = TelethonClientManager(
-        storage_mode=StorageMode.TO_DISK,
+        storage_mode=StorageMode.LOCAL,
         api_id=TELEGRAM_API_ID,
         api_hash=TELEGRAM_API_HASH,
         sessions_dir=SESSIONS_DIR,

@@ -12,25 +12,46 @@ class ChatData:
         "Chat": Chat,
     }
 
-    def __init__(self, entity, last_message_date):
+    def __init__(self, entity, last_message_date, finished_downloading=False, id=None):
+        if isinstance(entity, dict):
+            entity_type = entity.pop("_")
+            entity = self.load_entity(entity_type, entity)
         self.entity = entity
         if isinstance(last_message_date, str):
             last_message_date = datetime.fromisoformat(last_message_date)
         self.last_message_date = last_message_date
-        self.finished_downloading = False
+        self.finished_downloading = finished_downloading
+        if id is not None:
+            assert id == self.id
 
-    def to_json(self):
+    @property
+    def id(self):
+        return self.entity.id
+
+    def to_json(self, **kwargs):
         data = {
-            "entity": self.entity.to_json(),
+            "id": self.id,
+            "entity": self.entity.to_json(**kwargs),
             "last_message_date": self.last_message_date.isoformat(),
             "finished_downloading": self.finished_downloading,
         }
-        return data
+        return json.dumps(data, **kwargs)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "entity": self.entity.to_dict(),
+            "last_message_date": self.last_message_date,
+            "finished_downloading": self.finished_downloading,
+        }
 
     @classmethod
-    def from_json(cls, data):
+    def from_json(cls, json_string: str):
+        data = json.loads(json_string)
         entity_data = json.loads(data["entity"])
         entity_type = entity_data.pop("_")
+        if entity_type == "ChatForbidden":
+            return None
         entity = cls.load_entity(entity_type, entity_data)
         last_message_date = datetime.fromisoformat(data["last_message_date"])
         return cls(

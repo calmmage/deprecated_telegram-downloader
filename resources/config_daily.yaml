@@ -1,3 +1,5 @@
+storage_mode: mongo  # or local, or both
+
 size_thresholds:
   max_members_group: 1000
   max_members_channel: 1000

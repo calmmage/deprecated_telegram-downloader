@@ -1,4 +1,3 @@
-import asyncio
 import json
 import random
 from collections import defaultdict
@@ -6,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
-from dotenv import load_dotenv
 from loguru import logger
 from pymongo import MongoClient
 from telethon import TelegramClient
@@ -45,23 +43,7 @@ class TelegramDownloader:
         self._db = None
         self._telethon_client = None
 
-    def run(self):
-        load_dotenv()
-        import argparse
-
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-        args = parser.parse_args()
-
-        logger.debug("Setting up logger...")
-        setup_logger(logger, level="DEBUG" if args.debug else "INFO")
-
-        # Run the async main function
-        logger.debug("Starting script")
-        asyncio.run(self.main(debug=args.debug))
-        logger.debug("Script completed")
-
-    async def main(self, debug: bool = False):
+    async def main(self, ignore_finished=False, chat_sample_size=None):
         """
         # 1. load list of chats
         # 2. load config
@@ -72,20 +54,12 @@ class TelegramDownloader:
         # 1. load list of chats
         logger.debug("Loading chats...")
         chats = await self._get_chats()
-        logger.debug(f"Loaded {len(chats)} chats")
+        logger.info(f"Loaded {len(chats)} chats")
 
-        if debug:
-            logger.debug("Debug mode enabled - shuffling and limiting chats")
+        if chat_sample_size is not None:
             random.shuffle(chats)
-            chats = chats[:10]
-            logger.debug(f"Limited to {len(chats)} chats")
-
-        # 2. load config
-        logger.debug("Loading config...")
-        # config_file = Path("config_daily.yaml")
-        # config_file = Path("config_archive.yaml")
-        config_file = Path("config_debug.yaml")
-        logger.debug(f"Using config file: {config_file}")
+            chats = chats[:chat_sample_size]
+            logger.info(f"Limited to {len(chats)} chats")
 
         # 3. for each chat - pick a config that applies to it
         logger.debug("Starting chat processing loop...")
@@ -97,7 +71,7 @@ class TelegramDownloader:
 
             # 4. download messages as per config
             logger.debug(f"Downloading messages for chat: {chat.name}")
-            messages = await self._download_messages(chat, chat_config)
+            messages = await self._download_messages(chat, chat_config, ignore_finished)
             logger.debug(f"Downloaded {len(messages)} messages")
 
             # 5. save messages to a database
@@ -175,8 +149,11 @@ class TelegramDownloader:
         logger.debug("Chats saved successfully")
 
     # ✅
-    def _save_chats_to_db(self, chats: List[ChatData], collection_name: str = "telegram_chats"):
-        # todo: rework to Motor
+    def _save_chats_to_db(self, chats: List[ChatData], collection_name: str | None = None):
+        # Use collection name from env settings if not provided
+        if collection_name is None:
+            collection_name = self.env.MONGO_CHATS_COLLECTION
+
         for chat in chats:
             self.db[collection_name].update_one(
                 {"id": chat.id},  # Use id as the key for upsert
@@ -187,7 +164,11 @@ class TelegramDownloader:
         logger.debug(f"Upserted {len(chats)} chats to db")
 
     # ✅
-    def _load_chats_from_db(self, collection_name: str = "telegram_chats") -> List[ChatData]:
+    def _load_chats_from_db(self, collection_name: str | None = None) -> List[ChatData]:
+        # Use collection name from env settings if not provided
+        if collection_name is None:
+            collection_name = self.env.MONGO_CHATS_COLLECTION
+
         telegram_chats_collection = self.db[collection_name]
         chats = [ChatData(**item) for item in telegram_chats_collection.find()]
         logger.info(f"Loaded {len(chats)} entities from db collection {collection_name}")
@@ -242,7 +223,7 @@ class TelegramDownloader:
             datetime | None: The UTC timestamp of the last chat refresh, or None if no refresh has occurred.
             The returned datetime is always timezone-aware in UTC.
         """
-        collection = self.db["telegram_downloader_app_data"]
+        collection = self.db[self.env.MONGO_APP_DATA_COLLECTION]
         data = collection.find_one({"key": "chat_refresh_timestamp"})
         if data and "value" in data:
             timestamp = data["value"]
@@ -273,7 +254,7 @@ class TelegramDownloader:
         if timestamp is not None:
             timestamp = timestamp.astimezone(timezone.utc)
 
-        collection = self.db["telegram_downloader_app_data"]
+        collection = self.db[self.env.MONGO_APP_DATA_COLLECTION]
         collection.update_one(
             {"key": "chat_refresh_timestamp"},
             {"$set": {"value": timestamp}},
@@ -405,7 +386,7 @@ class TelegramDownloader:
             Returns (None, None) if no messages found
         """
         logger.debug(f"Getting message range for chat {chat_id}")
-        collection = self.db["telegram_messages"]
+        collection = self.db[self.env.MONGO_MESSAGES_COLLECTION]
 
         # Find min timestamp
         min_result = collection.find({"chat_id": chat_id}, {"date": 1}).sort("date", 1).limit(1)
@@ -422,7 +403,9 @@ class TelegramDownloader:
         logger.debug(f"Message range for chat {chat_id}: {min_timestamp} to {max_timestamp}")
         return min_timestamp, max_timestamp
 
-    async def _download_messages(self, chat: ChatData, chat_config: ChatCategoryConfig):
+    async def _download_messages(
+        self, chat: ChatData, chat_config: ChatCategoryConfig, ignore_finished: bool = False
+    ):
         logger.debug(f"Starting message download for chat: {chat.name}")
 
         if not chat_config or not chat_config.enabled:
@@ -430,7 +413,7 @@ class TelegramDownloader:
             return []
 
         # Skip if chat is marked as finished downloading
-        if chat.finished_downloading:
+        if chat.finished_downloading and not ignore_finished:
             logger.info(f"Skipping chat {chat.name}: marked as finished")
             return []
 
@@ -467,7 +450,7 @@ class TelegramDownloader:
 
         # First pass: get newer messages from max_timestamp
         if max_timestamp:
-            logger.debug(f"Getting messages newer than {max_timestamp}")
+            logger.info(f"Getting messages newer than {max_timestamp}")
             newer_messages = await self._load_message_range(
                 chat,
                 min_date=max_timestamp,
@@ -536,12 +519,9 @@ class TelegramDownloader:
         return messages
 
     def _get_database(self):
-        # option 1 - mongodb pymongo client
-
         logger.info("Starting MongoDB setup...")
 
         # Get MongoDB connection string and database name from environment variables
-
         conn_str = self.env.MONGO_CONN_STR
         db_name = self.env.MONGO_DB_NAME
 
@@ -552,8 +532,6 @@ class TelegramDownloader:
         client = MongoClient(conn_str)
         logger.info("Successfully connected to MongoDB")
 
-        # MongoDB creates databases and collections automatically when you first store data
-        # But we can explicitly create them to ensure they exist
         logger.debug("Checking if database exists...")
         if db_name not in client.list_database_names():
             logger.debug(f"Creating database: {db_name}")
@@ -562,12 +540,13 @@ class TelegramDownloader:
             logger.debug(f"Using existing database: {db_name}")
             db = client[db_name]
 
-        # Define collections we'll need
+        # Define collections using env settings
         collections = {
-            "messages": "telegram_messages",
-            "chats": "telegram_chats",
-            "users": "telegram_users",
-            "heartbeats": "telegram_heartbeats",
+            "messages": self.env.MONGO_MESSAGES_COLLECTION,
+            "chats": self.env.MONGO_CHATS_COLLECTION,
+            "users": self.env.MONGO_USERS_COLLECTION,
+            "heartbeats": self.env.MONGO_HEARTBEATS_COLLECTION,
+            "app_data": self.env.MONGO_APP_DATA_COLLECTION,
         }
 
         logger.debug("Starting collection setup...")
@@ -583,9 +562,9 @@ class TelegramDownloader:
 
         logger.debug("Collection setup complete")
 
-        # add item, read items - to the test heartbeats collection
+        # Test heartbeats collection
         logger.debug("Testing heartbeats collection...")
-        heartbeats_collection = db.heartbeats
+        heartbeats_collection = db[self.env.MONGO_HEARTBEATS_COLLECTION]
 
         logger.debug("Inserting test heartbeat...")
         heartbeats_collection.insert_one({"timestamp": datetime.now()})
@@ -608,12 +587,9 @@ class TelegramDownloader:
         if self.storage_mode == StorageMode.MONGO:
             logger.debug("Starting message save process")
 
-            # step 1: get a db connection - i already did this somewhere
             logger.debug("Getting database connection")
-            # todo: move collection name to config
-            collection_name = "telegram_messages"
-            collection = self.db[collection_name]
-            logger.debug(f"Got collection: {collection_name}")
+            collection = self.db[self.env.MONGO_MESSAGES_COLLECTION]
+            logger.debug(f"Got collection: {self.env.MONGO_MESSAGES_COLLECTION}")
 
             # make messages to json format
             logger.debug("Converting messages to JSON")

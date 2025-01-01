@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "telegram-downloader"
-version = "0.0.6"
+version = "0.0.7"
 description = ""
 authors = ["Petr Lavrov <calmmage@gmail.com>"]
 readme = "README.md"

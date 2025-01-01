@@ -25,4 +25,4 @@
 
 - [ ] fix the correct way to find existing messages for the chat
   - [ ] try in the notebook
-- [ ] add sanity check: if timestamp < last message date for chat -> skip
+- [x] add sanity check: if timestamp < last message date for chat -> skip

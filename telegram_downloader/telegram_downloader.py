@@ -430,6 +430,15 @@ class TelegramDownloader:
         if chat_config.backdays:
             # Make min_date timezone-aware to match message.date
             config_min_date = datetime.now(timezone.utc) - timedelta(days=chat_config.backdays)
+
+            # Sanity check: if chat's last message is older than config_min_date, skip the chat
+            if chat.last_message_date and chat.last_message_date < config_min_date:
+                logger.info(
+                    f"Skipping chat {chat.name}: last message ({chat.last_message_date}) "
+                    f"is older than minimum date ({config_min_date})"
+                )
+                return []
+
             # Use the later of config_min_date and existing min_timestamp
             min_date = max(config_min_date, min_timestamp) if min_timestamp else config_min_date
             logger.debug(f"Set min_date to {min_date}")

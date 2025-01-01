@@ -498,6 +498,7 @@ class TelegramDownloader:
                     api_id=self.env.TELEGRAM_API_ID,
                     api_hash=self.env.TELEGRAM_API_HASH,
                 )
+                await self._telethon_client.start()
             else:
                 self._telethon_client = await self._get_telethon_client()
         return self._telethon_client
@@ -748,7 +749,7 @@ class TelegramDownloader:
         logger.debug(f"Calculated stats: {stats}")
         return stats
 
-    async def demo_stats(self, debug: bool = False):
+    async def demo_chat_stats(self, debug: bool = False):
         setup_logger(logger, level="DEBUG" if debug else "INFO")
         logger.debug("Starting main function")
         chats = await self._get_chats()

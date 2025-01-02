@@ -67,7 +67,12 @@ class TelegramDownloader:
             # 4. download messages as per config
             logger.info(f"Downloading messages for chat: {chat.name}")
             messages = await self._download_messages(chat, chat_config, ignore_finished)
-            logger.info(f"Downloaded {len(messages)} messages")
+            if messages:
+                min_date = min(msg.date for msg in messages).strftime("%d %b %Y")
+                max_date = max(msg.date for msg in messages).strftime("%d %b %Y")
+                logger.info(f"Downloaded {len(messages)} messages: {min_date} - {max_date}")
+            else:
+                logger.info("Downloaded 0 messages")
 
             # 5. save messages to a database
             logger.debug(f"Saving {len(messages)} messages to database")
@@ -424,11 +429,6 @@ class TelegramDownloader:
             logger.debug(f"Skipping chat {chat.name}: config disabled")
             return []
 
-        # Skip if chat is marked as finished downloading
-        if chat.finished_downloading and not ignore_finished:
-            logger.info(f"Skipping chat {chat.name}: marked as finished")
-            return []
-
         logger.info(f"Downloading messages from chat: {chat.name}")
 
         messages = []
@@ -455,6 +455,10 @@ class TelegramDownloader:
             min_timestamp, max_timestamp = self._get_chat_message_range(chat.id)
 
             if min_timestamp is None:
+                # Skip if chat is marked as finished downloading
+                if chat.finished_downloading and not ignore_finished:
+                    logger.info(f"Skipping chat {chat.name}: marked as finished")
+                    return []
                 logger.info("No existing messages found, performing full download")
                 messages = await self._download_all_messages(chat, chat_config)
             else:
@@ -462,7 +466,7 @@ class TelegramDownloader:
                     f"Already have messages for chat {chat.name} from {min_timestamp} to {max_timestamp}"
                 )
                 messages = await self._download_messages_excluding_range(
-                    chat, chat_config, min_timestamp, max_timestamp
+                    chat, chat_config, min_timestamp, max_timestamp, ignore_finished=ignore_finished
                 )
 
             # After successful download, mark as finished
@@ -493,6 +497,7 @@ class TelegramDownloader:
         chat_config: ChatCategoryConfig,
         min_timestamp: datetime,
         max_timestamp: datetime,
+        ignore_finished: bool = False,
     ):
 
         logger.info(f"Getting messages newer than {max_timestamp}")
@@ -502,6 +507,12 @@ class TelegramDownloader:
 
         logger.info(f"Getting messages older than {min_timestamp}")
         # part 2: download older messages
+
+        # Skip if chat is marked as finished downloading
+        if chat.finished_downloading and not ignore_finished:
+            logger.info(f"Skipping the older messages - chat is marked as finished")
+            return messages
+
         messages.extend(
             await self._load_messages(
                 chat, offset_date=min_timestamp, reverse=False, limit=chat_config.limit

@@ -25,3 +25,5 @@
 - [ ] fix the correct way to find existing messages for the chat
   - [ ] try in the notebook
 - [x] add sanity check: if timestamp < last message date for chat -> skip
+
+- [ ] write date range of downloaded messages to logging info

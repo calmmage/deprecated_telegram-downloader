@@ -46,13 +46,6 @@ class TelegramDownloader:
         self.reset_properties()
 
     async def main(self, ignore_finished=False, chat_sample_size=None):
-        """
-        # 1. load list of chats
-        # 2. load config
-        # 3. for each chat - pick a config that applies to it
-        # 4. download messages as per config
-        # 5. save messages to a database
-        """
         # 1. load list of chats
         logger.debug("Loading chats...")
         chats = await self._get_chats()
@@ -81,6 +74,11 @@ class TelegramDownloader:
             if len(messages) > 0:
                 self._save_messages(messages)
             logger.debug("Messages saved successfully")
+
+        # Add duplicate cleanup at the end
+        logger.info("Starting duplicate message cleanup")
+        deleted_count = self.delete_duplicate_messages()
+        logger.info(f"Duplicate cleanup complete. Deleted {deleted_count} messages")
 
     @property
     def storage_mode(self):
@@ -386,14 +384,12 @@ class TelegramDownloader:
 
         chat_data = self.chats[chat_id]
 
-        if chat_data.entity_category == "channel":
+        if type(chat_data.entity).__name__ == "Channel":
             query = {"peer_id": {"_": "PeerChannel", "channel_id": chat_id}}
-        elif chat_data.entity_category == "private chat":
+        elif type(chat_data.entity).__name__ == "User":
             query = {"peer_id": {"_": "PeerUser", "user_id": chat_id}}
-        elif chat_data.entity_category == "group":
+        elif type(chat_data.entity).__name__ == "Chat":
             query = {"peer_id": {"_": "PeerChat", "chat_id": chat_id}}
-        elif chat_data.entity_category == "bot":
-            query = {"peer_id": {"_": "PeerBot", "user_id": chat_id}}
         else:
             raise ValueError(f"Unknown chat type: {chat_data.entity_category}")
 
@@ -435,30 +431,49 @@ class TelegramDownloader:
 
         logger.info(f"Downloading messages from chat: {chat.name}")
 
-        if chat_config.backdays:
-            config_min_date = datetime.now(timezone.utc) - timedelta(days=chat_config.backdays)
-            last_message_date = ensure_utc_datetime(chat.last_message_date)
+        messages = []
+        try:
+            if chat_config.backdays:
+                config_min_date = datetime.now(timezone.utc) - timedelta(days=chat_config.backdays)
+                last_message_date = ensure_utc_datetime(chat.last_message_date)
 
-            if last_message_date and last_message_date < config_min_date:
-                logger.info(
-                    f"Skipping chat {chat.name}: last message ({last_message_date}) "
-                    f"is older than minimum date ({config_min_date})"
-                )
+                if last_message_date and last_message_date < config_min_date:
+                    logger.info(
+                        f"Skipping chat {chat.name}: last message ({last_message_date}) "
+                        f"is older than minimum date ({config_min_date})"
+                    )
+                    # Mark as finished since all messages are too old
+                    chat.finished_downloading = True
+                    self._save_chat_to_db(chat)
+                    return []
+
+            if chat_config.skip_big and chat.is_big:
+                logger.info(f"Skipping chat {chat.name}: big chat")
                 return []
 
-        # Get existing message range
-        min_timestamp, max_timestamp = self._get_chat_message_range(chat.id)
+            # Get existing message range
+            min_timestamp, max_timestamp = self._get_chat_message_range(chat.id)
 
-        if min_timestamp is None:
-            logger.info("No existing messages found, performing full download")
-            return await self._download_all_messages(chat, chat_config)
-        else:
-            logger.info(
-                f"Already have messages for chat {chat.name} from {min_timestamp} to {max_timestamp}"
-            )
-            return await self._download_messages_excluding_range(
-                chat, chat_config, min_timestamp, max_timestamp
-            )
+            if min_timestamp is None:
+                logger.info("No existing messages found, performing full download")
+                messages = await self._download_all_messages(chat, chat_config)
+            else:
+                logger.info(
+                    f"Already have messages for chat {chat.name} from {min_timestamp} to {max_timestamp}"
+                )
+                messages = await self._download_messages_excluding_range(
+                    chat, chat_config, min_timestamp, max_timestamp
+                )
+
+            # After successful download, mark as finished
+            chat.finished_downloading = True
+            self._save_chat_to_db(chat)
+            return messages
+
+        except Exception as e:
+            logger.error(f"Error downloading messages from {chat.name}: {e}")
+            # Don't mark as finished if there was an error
+            return []
 
     async def _download_all_messages(self, chat: ChatData, chat_config: ChatCategoryConfig):
         kwargs = {}
@@ -1045,14 +1060,12 @@ class TelegramDownloader:
         # todo: load newer messages from the client
         chat_id = self.resolve_chat(chat_key)
         chat_data = self.chats[chat_id]
-        if chat_data.entity_category == "channel":
+        if type(chat_data.entity).__name__ == "Channel":
             query = {"peer_id": {"_": "PeerChannel", "channel_id": chat_id}}
-        elif chat_data.entity_category == "private chat":
+        elif type(chat_data.entity).__name__ == "User":
             query = {"peer_id": {"_": "PeerUser", "user_id": chat_id}}
-        elif chat_data.entity_category == "group":
+        elif type(chat_data.entity).__name__ == "Chat":
             query = {"peer_id": {"_": "PeerChat", "chat_id": chat_id}}
-        elif chat_data.entity_category == "bot":
-            query = {"peer_id": {"_": "PeerBot", "user_id": chat_id}}
         else:
             raise ValueError(f"Unknown chat type: {chat_data.entity_category}")
         messages = self.messages_collection.find(query)
@@ -1127,3 +1140,70 @@ class TelegramDownloader:
             filtered_chats.append(chat)
 
         return filtered_chats
+
+    def _save_chat_to_db(self, chat: ChatData):
+        """Update chat data in database."""
+        self.chats_collection.update_one({"id": chat.id}, {"$set": chat.to_dict()}, upsert=True)
+
+    def _find_duplicate_messages(self) -> tuple[dict, list]:
+        """Find messages that are complete duplicates (all fields match except _id).
+
+        Returns:
+            tuple[dict, list]: (duplicates_by_id, duplicate_ids_to_delete)
+                duplicates_by_id: Dict mapping message_id to list of duplicate messages
+                duplicate_ids_to_delete: List of MongoDB _id values to delete
+        """
+        logger.info("Starting duplicate message detection")
+
+        # Step 1: Group messages by id
+        messages_by_id = defaultdict(list)
+        for message in self.messages_collection.find():
+            messages_by_id[message["id"]].append(message)
+
+        # Step 2: Find duplicates
+        duplicates = {}
+        to_delete = []
+
+        for message_id, messages in tqdm(messages_by_id.items(), desc="Checking for duplicates"):
+            if len(messages) > 1:
+                duplicates[message_id] = messages
+                # Compare messages without _id field
+                items_to_compare = []
+                for message in messages:
+                    _id = message.pop("_id")
+                    duplicate = False
+                    for item in items_to_compare:
+                        if item == message:
+                            duplicate = True
+                            to_delete.append(_id)
+                            break
+                    if not duplicate:
+                        items_to_compare.append(message)
+
+        logger.info(f"Found {len(duplicates)} message IDs with potential duplicates")
+        logger.info(f"Identified {len(to_delete)} messages for deletion")
+
+        return duplicates, to_delete
+
+    def delete_duplicate_messages(self) -> int:
+        """Delete duplicate messages from the database.
+
+        Returns:
+            int: Number of deleted messages
+        """
+        _, to_delete = self._find_duplicate_messages()
+
+        if not to_delete:
+            logger.info("No duplicate messages found")
+            return 0
+
+        # Delete duplicates
+        result = self.messages_collection.delete_many({"_id": {"$in": to_delete}})
+        deleted_count = result.deleted_count
+
+        logger.info(f"Deleted {deleted_count} duplicate messages")
+
+        # Reset cached messages
+        self.reset_properties()
+
+        return deleted_count

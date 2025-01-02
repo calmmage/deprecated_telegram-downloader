@@ -3,6 +3,7 @@ import random
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from re import M
 from typing import List
 
 from loguru import logger
@@ -71,9 +72,9 @@ class TelegramDownloader:
             logger.debug(f"Selected config type: {type(chat_config).__name__}")
 
             # 4. download messages as per config
-            logger.debug(f"Downloading messages for chat: {chat.name}")
+            logger.info(f"Downloading messages for chat: {chat.name}")
             messages = await self._download_messages(chat, chat_config, ignore_finished)
-            logger.debug(f"Downloaded {len(messages)} messages")
+            logger.info(f"Downloaded {len(messages)} messages")
 
             # 5. save messages to a database
             logger.debug(f"Saving {len(messages)} messages to database")
@@ -370,7 +371,7 @@ class TelegramDownloader:
         else:
             raise ValueError(f"Invalid chat category: {chat.entity_category}")
 
-    def _get_chat_message_range(self, chat_id: int) -> tuple[datetime | None, datetime | None]:
+    def _get_chat_message_range(self, chat_id: int) -> tuple[datetime, datetime]:
         """Get the min and max timestamps of messages for a chat in the database.
 
         Args:
@@ -434,17 +435,6 @@ class TelegramDownloader:
 
         logger.info(f"Downloading messages from chat: {chat.name}")
 
-        # Get existing message range
-        min_timestamp, max_timestamp = self._get_chat_message_range(chat.id)
-        if min_timestamp is not None:
-            logger.info(
-                f"Already have messages for chat {chat.name} from {min_timestamp} to {max_timestamp}"
-            )
-
-        # Initialize parameters for message download
-        kwargs = {}
-
-        # Apply config parameters
         if chat_config.backdays:
             config_min_date = datetime.now(timezone.utc) - timedelta(days=chat_config.backdays)
             last_message_date = ensure_utc_datetime(chat.last_message_date)
@@ -456,45 +446,53 @@ class TelegramDownloader:
                 )
                 return []
 
-            min_date = max(config_min_date, min_timestamp) if min_timestamp else config_min_date
-            logger.debug(f"Set min_date to {min_date}")
+        # Get existing message range
+        min_timestamp, max_timestamp = self._get_chat_message_range(chat.id)
+
+        if min_timestamp is None:
+            logger.info("No existing messages found, performing full download")
+            return await self._download_all_messages(chat, chat_config)
         else:
-            min_date = min_timestamp
+            logger.info(
+                f"Already have messages for chat {chat.name} from {min_timestamp} to {max_timestamp}"
+            )
+            return await self._download_messages_excluding_range(
+                chat, chat_config, min_timestamp, max_timestamp
+            )
+
+    async def _download_all_messages(self, chat: ChatData, chat_config: ChatCategoryConfig):
+        kwargs = {}
+        if chat_config.backdays:
+            config_min_date = datetime.now(timezone.utc) - timedelta(days=chat_config.backdays)
+            kwargs["offset_date"] = config_min_date
+            kwargs["reverse"] = True
 
         if chat_config.limit:
             kwargs["limit"] = chat_config.limit
 
-        if chat_config.skip_big and chat.is_big:
-            logger.warning(f"Skipping large chat {chat.name}")
-            return []
+        return await self._load_messages(chat, **kwargs)
 
-        messages = []
+    async def _download_messages_excluding_range(
+        self,
+        chat: ChatData,
+        chat_config: ChatCategoryConfig,
+        min_timestamp: datetime,
+        max_timestamp: datetime,
+    ):
 
-        # Get newer messages (if we have existing messages)
-        if max_timestamp:
-            logger.info(f"Getting messages newer than {max_timestamp}")
-            messages.extend(
-                await self._load_messages(
-                    chat, offset_date=max_timestamp, reverse=True, **kwargs  # Newest first
-                )
+        logger.info(f"Getting messages newer than {max_timestamp}")
+        # part 1: download newer messages
+        messages = await self._load_messages(chat, offset_date=max_timestamp, reverse=True)
+        logger.info(f"Downloaded {len(messages)} newer messages")
+
+        logger.info(f"Getting messages older than {min_timestamp}")
+        # part 2: download older messages
+        messages.extend(
+            await self._load_messages(
+                chat, offset_date=min_timestamp, reverse=False, limit=chat_config.limit
             )
-
-        # Get older messages (either first download or continuing from min_timestamp)
-        if min_date:
-            logger.info(f"Getting messages older than or equal to {min_date}")
-            messages.extend(
-                await self._load_messages(
-                    chat, offset_date=min_date, reverse=False, **kwargs  # Oldest first
-                )
-            )
-
-        logger.info(f"Downloaded {len(messages)} messages from {chat.name}")
-
-        # If we got no messages and hit the min_date, mark chat as finished
-        if not messages and min_date:
-            logger.info(f"Marking chat {chat.name} as finished downloading")
-            chat.finished_downloading = True
-            self._save_chats_to_db([chat])
+        )
+        # logger.info(f"Downloaded {len(messages)} messages total")
 
         return messages
 

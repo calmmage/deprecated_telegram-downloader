@@ -25,7 +25,7 @@ owned_channels:
 other_groups:
   enabled: true
   backdays: null
-  limit: null
+  limit: 10000
   whitelist: []
   blacklist: []
   download_attachments: true
@@ -34,7 +34,7 @@ other_groups:
 other_channels:
   enabled: true
   backdays: null
-  limit: null
+  limit: 10000
   whitelist: []
   blacklist: []
   download_attachments: true

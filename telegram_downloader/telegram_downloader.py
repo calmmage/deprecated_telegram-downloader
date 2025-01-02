@@ -108,6 +108,7 @@ class TelegramDownloader:
                 continue
             chat = ChatData(entity=dialog.entity, last_message_date=dialog.date)
             result.append(chat)
+        result = self._filter_redundant_chats(result)
         return result
 
     # ✅
@@ -1088,3 +1089,43 @@ class TelegramDownloader:
     # {'_': 'PeerUser', 'user_id': 322324998}
 
     # endregion access utils
+
+    def _filter_redundant_chats(self, chats: List[ChatData]) -> List[ChatData]:
+        """
+        Filter out redundant chat entries, keeping Channel versions and handling migrated chats.
+
+        Args:
+            chats: List of ChatData objects to filter
+
+        Returns:
+            dict[int, ChatData]: Filtered dictionary of chat_id to ChatData
+        """
+        # First pass: build migration mapping and collect all chats
+        migration_map = {}  # old_chat_id -> new_channel_id
+        chat_map = {}  # chat_id -> ChatData
+
+        for chat in chats:
+            chat_map[chat.id] = chat
+
+            # Check if this is a migrated chat
+            migrated_to = getattr(chat.entity, "migrated_to", None)
+            if migrated_to and hasattr(migrated_to, "channel_id"):
+                migration_map[chat.id] = migrated_to.channel_id
+
+        # Second pass: filter out migrated chats
+        filtered_chats = []
+        for chat_id, chat in chat_map.items():
+            # Skip if this chat was migrated and we have the new channel
+            if chat_id in migration_map:
+                new_channel_id = migration_map[chat_id]
+                if new_channel_id in chat_map:
+                    logger.debug(
+                        f"Skipping migrated chat {chat_id} ('{chat.name}') "
+                        f"in favor of channel {new_channel_id}"
+                    )
+                    continue
+
+            # Keep this chat
+            filtered_chats.append(chat)
+
+        return filtered_chats

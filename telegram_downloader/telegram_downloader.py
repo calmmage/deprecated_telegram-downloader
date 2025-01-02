@@ -20,7 +20,7 @@ from telegram_downloader.config import (
 )
 from telegram_downloader.data_model import ChatData
 from telegram_downloader.telethon_client_manager import StorageMode, TelethonClientManager
-from telegram_downloader.utils import setup_logger
+from telegram_downloader.utils import ensure_utc_datetime, setup_logger
 
 
 class TelegramDownloader:
@@ -141,7 +141,7 @@ class TelegramDownloader:
                 }
                 for chat in chats
             ],
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         data_path = Path("data/chats.json")
@@ -161,7 +161,14 @@ class TelegramDownloader:
 
     # ✅
     def _load_chats_from_db(self) -> List[ChatData]:
-        chats = [ChatData(**item) for item in self.chats_collection.find()]
+        """Load chats from database and verify the refresh timestamp."""
+
+        chats = []
+        for item in self.chats_collection.find():
+            item.pop("_id")
+            chat = ChatData(**item)
+            chats.append(chat)
+
         logger.info(f"Loaded {len(chats)} chats from database")
         return chats
 
@@ -217,15 +224,7 @@ class TelegramDownloader:
         collection = self.db[self.env.MONGO_APP_DATA_COLLECTION]
         data = collection.find_one({"key": "chat_refresh_timestamp"})
         if data and "value" in data:
-            timestamp = data["value"]
-            # Ensure the timestamp is timezone-aware in UTC
-            if isinstance(timestamp, datetime):
-                if timestamp.tzinfo is None:
-                    timestamp = timestamp.replace(tzinfo=timezone.utc)
-                else:
-                    timestamp = timestamp.astimezone(timezone.utc)
-                return timestamp
-            return None
+            return ensure_utc_datetime(data["value"])
         return None
 
     # ✅
@@ -279,22 +278,26 @@ class TelegramDownloader:
     async def _get_chats(self) -> List[ChatData]:
         logger.debug("Getting chats asynchronously")
         if self.storage_mode == StorageMode.MONGO:
-            if self._has_fresh_chats_in_db():  # ✅
+            if self._has_fresh_chats_in_db():
                 logger.debug("Found fresh chats in database")
-                return self._load_chats_from_db()  # ✅
+                return self._load_chats_from_db()
             else:
                 logger.debug("No fresh chats found, getting from client")
-                chats = await self._get_chats_from_client()  # ✅
-                self._save_chats_to_db(chats)  # ✅
+                chats = await self._get_chats_from_client()
+                self._save_chats_to_db(chats)
+                # Set the refresh timestamp after successfully saving chats
+                self.chat_refresh_timestamp = datetime.now(timezone.utc)
                 return chats
         elif self.storage_mode == StorageMode.LOCAL:
-            if self._has_fresh_chats_on_disk():  # ✅
+            if self._has_fresh_chats_on_disk():
                 logger.debug("Found fresh chats on disk")
                 return self._get_chats_from_disk()  # ✅
             else:
                 logger.debug("No fresh chats found, getting from client")
-                chats = await self._get_chats_from_client()  # ✅
-                self._save_chats_to_disk(chats)  # ✅
+                chats = await self._get_chats_from_client()
+                self._save_chats_to_disk(chats)
+                # Set the refresh timestamp after successfully saving chats
+                self.chat_refresh_timestamp = datetime.now(timezone.utc)
                 return chats
         else:
             raise ValueError(f"Invalid storage mode: {self.storage_mode}")
@@ -374,7 +377,7 @@ class TelegramDownloader:
 
         Returns:
             tuple[datetime | None, datetime | None]: (min_timestamp, max_timestamp)
-            Returns (None, None) if no messages found
+            Returns (None, None) if no messages found. Returned datetimes are timezone-aware (UTC).
         """
         logger.debug(f"Getting message range for chat {chat_id}")
         collection = self.messages_collection
@@ -401,8 +404,15 @@ class TelegramDownloader:
         min_doc = next(min_result, None)
         max_doc = next(max_result, None)
 
-        min_timestamp = min_doc["date"] if min_doc else None
-        max_timestamp = max_doc["date"] if max_doc else None
+        # Ensure timestamps are timezone-aware
+        min_timestamp = ensure_utc_datetime(min_doc["date"] if min_doc else None)
+        max_timestamp = ensure_utc_datetime(max_doc["date"] if max_doc else None)
+
+        # Convert naive datetimes to timezone-aware if needed
+        if min_timestamp and min_timestamp.tzinfo is None:
+            min_timestamp = min_timestamp.replace(tzinfo=timezone.utc)
+        if max_timestamp and max_timestamp.tzinfo is None:
+            max_timestamp = max_timestamp.replace(tzinfo=timezone.utc)
 
         logger.debug(f"Message range for chat {chat_id}: {min_timestamp} to {max_timestamp}")
         return min_timestamp, max_timestamp
@@ -425,56 +435,57 @@ class TelegramDownloader:
 
         # Get existing message range
         min_timestamp, max_timestamp = self._get_chat_message_range(chat.id)
+        if min_timestamp is not None:
+            logger.info(
+                f"Already have messages for chat {chat.name} from {min_timestamp} to {max_timestamp}"
+            )
 
         # Initialize parameters for message download
         kwargs = {}
-        logger.debug("Initializing download parameters")
 
         # Apply config parameters
         if chat_config.backdays:
-            # Make min_date timezone-aware to match message.date
             config_min_date = datetime.now(timezone.utc) - timedelta(days=chat_config.backdays)
+            last_message_date = ensure_utc_datetime(chat.last_message_date)
 
-            # Sanity check: if chat's last message is older than config_min_date, skip the chat
-            if chat.last_message_date and chat.last_message_date < config_min_date:
+            if last_message_date and last_message_date < config_min_date:
                 logger.info(
-                    f"Skipping chat {chat.name}: last message ({chat.last_message_date}) "
+                    f"Skipping chat {chat.name}: last message ({last_message_date}) "
                     f"is older than minimum date ({config_min_date})"
                 )
                 return []
 
-            # Use the later of config_min_date and existing min_timestamp
             min_date = max(config_min_date, min_timestamp) if min_timestamp else config_min_date
             logger.debug(f"Set min_date to {min_date}")
         else:
             min_date = min_timestamp
-            logger.debug(f"Using existing min_date: {min_date}")
 
         if chat_config.limit:
             kwargs["limit"] = chat_config.limit
-            logger.debug(f"Set message limit to {chat_config.limit}")
 
-        # Skip large groups if configured
         if chat_config.skip_big and chat.is_big:
             logger.warning(f"Skipping large chat {chat.name}")
             return []
 
         messages = []
 
-        # First pass: get newer messages from max_timestamp
+        # Get newer messages (if we have existing messages)
         if max_timestamp:
             logger.info(f"Getting messages newer than {max_timestamp}")
-            newer_messages = await self._load_message_range(
-                chat,
-                min_date=max_timestamp,
-                reverse=True,  # Get messages from newest to oldest
-                **kwargs,
+            messages.extend(
+                await self._load_messages(
+                    chat, offset_date=max_timestamp, reverse=True, **kwargs  # Newest first
+                )
             )
-            messages.extend(newer_messages)
 
-        # Second pass: get older messages until min_date
-        older_messages = await self._load_message_range(chat, min_date=min_date, **kwargs)
-        messages.extend(older_messages)
+        # Get older messages (either first download or continuing from min_timestamp)
+        if min_date:
+            logger.info(f"Getting messages older than or equal to {min_date}")
+            messages.extend(
+                await self._load_messages(
+                    chat, offset_date=min_date, reverse=False, **kwargs  # Oldest first
+                )
+            )
 
         logger.info(f"Downloaded {len(messages)} messages from {chat.name}")
 
@@ -499,27 +510,32 @@ class TelegramDownloader:
                 self._telethon_client = await self._get_telethon_client()
         return self._telethon_client
 
-    async def _load_message_range(
-        self, chat: ChatData, min_date: datetime | None, **kwargs
+    async def _load_messages(
+        self, chat: ChatData, offset_date: datetime | None = None, reverse: bool = False, **kwargs
     ) -> List[Message]:
-        client = await self.get_telethon_client()
+        """Load messages from Telegram.
 
+        Args:
+            chat: Chat to load messages from
+            offset_date: Date to start loading messages from
+            reverse: If True, load newer messages (from offset_date forward)
+                    If False, load older messages (from offset_date backward)
+            **kwargs: Additional arguments for iter_messages
+        """
+        client = await self.get_telethon_client()
         messages = []
+
         try:
-            logger.debug("Starting message iteration")
+            logger.debug(
+                f"Loading messages for {chat.name} {'after' if reverse else 'before'} {offset_date}"
+            )
             async for message in atqdm(
-                client.iter_messages(chat.entity, **kwargs),
+                client.iter_messages(
+                    chat.entity, offset_date=offset_date, reverse=reverse, **kwargs
+                ),
                 desc=f"Downloading messages for chat {chat.name}",
             ):
-
-                # Skip messages older than min_date
-                if min_date and message.date < min_date:
-                    logger.debug(f"Reached message older than min_date ({message.date}), stopping")
-                    break
-
-                # Use built-in to_json() method
                 messages.append(message)
-                # logger.debug(f"Added message ID {message.id}")
 
         except Exception as e:
             logger.error(f"Error downloading messages from {chat.name}: {e}")
@@ -608,20 +624,15 @@ class TelegramDownloader:
             messages_json = []
             for message in messages:
                 message_dict = message.to_dict()
-                # Extract chat_id from peer_id based on the type
-                peer_id = message_dict.get("peer_id", {})
-                if peer_id.get("_") == "PeerChannel":
-                    chat_id = peer_id.get("channel_id")
-                elif peer_id.get("_") == "PeerUser":
-                    chat_id = peer_id.get("user_id")
-                elif peer_id.get("_") == "PeerChat":
-                    chat_id = peer_id.get("chat_id")
-                else:
-                    logger.warning(f"Unknown peer_id type: {peer_id.get('_')}")
-                    chat_id = None
+                # Extract chat_id using existing method
+                try:
+                    chat_id = self._get_message_chat_id_from_raw(message_dict)
+                    message_dict["chat_id"] = chat_id
+                    messages_json.append(message_dict)
+                except ValueError as e:
+                    logger.warning(f"Skipping message - {e}")
+                    continue
 
-                message_dict["chat_id"] = chat_id
-                messages_json.append(message_dict)
             logger.debug(f"Converted {len(messages_json)} messages to JSON")
 
             logger.debug("Inserting messages into database")
@@ -724,23 +735,18 @@ class TelegramDownloader:
         # Basic:
         for chat in chats:
             entity = chat.entity
-            last_message_date = chat.last_message_date
-
             category = chat.entity_category
             stats[category + "s"] += 1
 
             # last_message_date = datetime.fromisoformat(getattr(chat, 'date', None)) if getattr(chat, 'date', None) else None
-            recent = (
-                last_message_date
-                and (datetime.now(last_message_date.tzinfo) - last_message_date) < recent_threshold
-            )
-            if recent:
+            is_recent = chat.get_is_recent(recent_threshold)
+            if is_recent:
                 stats[f"recent_{category}s"] += 1
 
             owner = getattr(entity, "creator", False)
             if owner:
                 stats[f"owned_{category}s"] += 1
-                if recent:
+                if is_recent:
                     stats[f"recent_owned_{category}s"] += 1
 
             members = getattr(entity, "participants_count", 0)

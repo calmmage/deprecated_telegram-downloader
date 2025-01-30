@@ -1,8 +1,7 @@
 import asyncio
 import os
-from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 from loguru import logger
 from pydantic import Field
@@ -75,55 +74,44 @@ class TelethonClientManager:
                 self.clients[user_id] = client
                 return client
 
-            # Get phone number from environment or ask user
+            # Get phone number from environment
             phone = os.getenv("TELEGRAM_PHONE_NUMBER")
             if not phone:
-                logger.error("No phone number provided in environment")
-                return None
+                raise ValueError("TELEGRAM_PHONE_NUMBER environment variable is required")
 
             logger.debug(f"Sending code request for phone {phone}")
-            # Send code request
             send_code_result = await client.send_code_request(phone)
 
-            # Get verification code from environment or ask user
-            code = os.getenv("TELEGRAM_CODE")
+            logger.info("Please check your Telegram app and enter the verification code:")
+            code = input("Code: ").strip()
             if not code:
-                logger.error("No verification code provided in environment")
-                return None
+                raise ValueError("Verification code is required")
 
-            logger.debug("Attempting to sign in with code")
             try:
-                # Try to sign in with the code
                 await client.sign_in(phone, code, phone_code_hash=send_code_result.phone_code_hash)
             except Exception as e:
                 if "password" in str(e).lower():
-                    # 2FA is enabled, get password from environment
+                    # 2FA is enabled
                     password = os.getenv("TELEGRAM_2FA_PASSWORD")
                     if not password:
-                        logger.error("2FA is enabled but no password provided in environment")
-                        return None
-
-                    logger.debug("2FA enabled, attempting to sign in with password")
-                    # Sign in with password
+                        raise ValueError("2FA is enabled but TELEGRAM_2FA_PASSWORD not provided")
                     await client.sign_in(password=password)
                 else:
                     raise
 
-            # Check if we're now authorized
             if await client.is_user_authorized():
                 logger.debug(f"Successfully authorized client for user {user_id}")
                 self.clients[user_id] = client
                 return client
 
-            logger.debug(f"Failed to authorize client for user {user_id}")
             raise Exception("Failed to authorize client")
 
         except Exception as e:
-            logger.warning(f"Failed to create new client for user {user_id}: {e}")
+            logger.error(f"Failed to create new client for user {user_id}: {e}")
             if session_file.exists():
                 logger.debug(f"Removing failed session file for user {user_id}")
                 session_file.unlink()
-            raise e
+            raise
 
     # 3 - check if conn is present on disk
     def _check_if_conn_is_present_on_disk(self, user_id: int) -> bool:
@@ -211,41 +199,52 @@ async def main(debug: bool = False):
     load_dotenv()
     setup_logger(logger, level="DEBUG" if debug else "INFO")
 
-    # Example initialization:
-    SESSIONS_DIR = Path("sessions")
-    SESSIONS_DIR.mkdir(exist_ok=True)
-    TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID"))
-    TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
-    telethon_manager = TelethonClientManager(
-        storage_mode=StorageMode.LOCAL,
-        api_id=TELEGRAM_API_ID,
-        api_hash=TELEGRAM_API_HASH,
-        sessions_dir=SESSIONS_DIR,
-    )
+    # Get required environment variables
+    api_id = os.getenv("TELEGRAM_API_ID")
+    if not api_id:
+        raise ValueError("TELEGRAM_API_ID environment variable is required")
+
+    api_hash = os.getenv("TELEGRAM_API_HASH")
+    if not api_hash:
+        raise ValueError("TELEGRAM_API_HASH environment variable is required")
 
     user_id = os.getenv("TELEGRAM_USER_ID")
+    if not user_id:
+        raise ValueError("TELEGRAM_USER_ID environment variable is required")
+
+    sessions_dir = Path("sessions")
+    sessions_dir.mkdir(exist_ok=True)
+
+    telethon_manager = TelethonClientManager(
+        storage_mode=StorageMode.LOCAL,
+        TELEGRAM_API_ID=int(api_id),
+        TELEGRAM_API_HASH=api_hash,
+        SESSIONS_DIR=sessions_dir,
+    )
 
     # Get client for user
-    client = await telethon_manager.get_telethon_client(int(user_id))
-    if not client:
-        print("Failed to get client")
+    try:
+        client = await telethon_manager.get_telethon_client(int(user_id))
+    except Exception as e:
+        logger.error(f"Failed to get client: {e}")
         return
 
-    # Get one random chat/contact
-    async for dialog in client.iter_dialogs():
-        print("\nRandom chat details:")
-        print(f"Chat name: {dialog.name}")
-        print(f"Chat ID: {dialog.id}")
-        print(f"Chat type: {dialog.entity.__class__.__name__}")
-        break  # Just get the first one
+    # Example: Get first dialog and message
+    try:
+        async for dialog in client.iter_dialogs(limit=1):
+            print("\nChat details:")
+            print(f"Name: {dialog.name}")
+            print(f"ID: {dialog.id}")
+            print(f"Type: {dialog.entity.__class__.__name__}")
 
-    # Get one random message
-    async for message in client.iter_messages(dialog):
-        print("\nRandom message:")
-        print(f"From: {message.sender_id}")
-        print(f"Date: {message.date}")
-        print(f"Text: {message.text}")
-        break  # Just get the first one
+            # Get first message from this dialog
+            async for message in client.iter_messages(dialog.id, limit=1):
+                print("\nLatest message:")
+                print(f"From: {message.sender_id}")
+                print(f"Date: {message.date}")
+                print(f"Text: {message.text}")
+    except Exception as e:
+        logger.error(f"Error accessing messages: {e}")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "telegram-downloader"
-version = "0.0.14"
+version = "0.0.15"
 description = ""
 authors = ["Petr Lavrov <calmmage@gmail.com>"]
 readme = "README.md"
@@ -105,10 +105,10 @@ pre-commit = ">=3.8.0"       # Pre-commit hooks
 tqdm = "*"                   # Progress bars
 
 ## data analysis, research
-#pandas = ">=2.0.0"          # Data manipulation and analysis
-#seaborn = "*"               # Statistical data visualization
+pandas = ">=2.0.0"          # Data manipulation and analysis
+seaborn = "*"               # Statistical data visualization
 #bokeh = "*"                 # Interactive visualizations
-#matplotlib = "*"            # Plotting library
+matplotlib = "*"            # Plotting library
 #numpy = "*"                 # Numerical computing
 
 [build-system]

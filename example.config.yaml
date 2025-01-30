@@ -1,0 +1,59 @@
+storage_mode: mongo
+
+size_thresholds:
+  max_members_group: 1000
+  max_members_channel: 1000
+
+owned_groups:
+  enabled: true
+  backdays: 365
+  limit: 100
+  whitelist: [ ]
+  blacklist: [ ]
+  download_attachments: false
+  skip_big: true
+
+owned_channels:
+  enabled: true
+  backdays: 365
+  limit: 100
+  whitelist: [ ]
+  blacklist: [ ]
+  download_attachments: false
+  skip_big: true
+
+other_groups:
+  enabled: true
+  backdays: 365
+  limit: 100
+  whitelist: [ ]
+  blacklist: [ ]
+  download_attachments: false
+  skip_big: true
+
+other_channels:
+  enabled: true
+  backdays: 365
+  limit: 100
+  whitelist: [ ]
+  blacklist: [ ]
+  download_attachments: false
+  skip_big: true
+
+private_chats:
+  enabled: true
+  backdays: 365
+  limit: 100
+  whitelist: [ ]
+  blacklist: [ ]
+  download_attachments: false
+  skip_big: false
+
+bots:
+  enabled: true
+  backdays: 365
+  limit: 100
+  whitelist: [ "test_bot" ]
+  blacklist: [ ]
+  download_attachments: false
+  skip_big: false

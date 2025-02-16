@@ -21,6 +21,7 @@ motor = "^3.6.0"
 pydantic = ">=2"            # Data validation and settings management
 pydantic-settings = ">=2"   # Pydantic settings management
 apscheduler = "^3.11.0"
+tqdm = "*"                   # Progress bars
 
 [tool.poetry.group.extras.dependencies]
 # dependencies for extra features
@@ -103,7 +104,6 @@ jupyter = ">=1.0.0"          # Interactive notebooks
 #jupyter_contrib_nbextensions = "*"
 black = ">=24.0.0"           # Code formatter
 pre-commit = ">=3.8.0"       # Pre-commit hooks
-tqdm = "*"                   # Progress bars
 
 ## data analysis, research
 pandas = ">=2.0.0"          # Data manipulation and analysis

@@ -18,4 +18,4 @@ RUN poetry config virtualenvs.create false
 RUN poetry install --only main,extras
 
 # Run the auto-downloader
-CMD ["python", "-m", "auto_downloader"]
+CMD ["poetry", "run", "python", "auto_downloader.py"]

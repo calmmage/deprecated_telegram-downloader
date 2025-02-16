@@ -1,17 +1,36 @@
-# Brain dump - plan
+# Todos from 01 Jan
 
-- Database
-- Telethon Client
-- Chats
+- [x] add support for collection names in the code (use env settings attrs instead of
+  str consts)
+- [ ] do a dynamic get_messages(chat) and get_chats() that check for updates in addition
+  to using the db
 
-- check already loaded
-- load messages
-  - load before messages (use break)
-  - load after (use offset)
-- AWS s3 - for media downloads
+- [ ] test full pipeline
+- [x] use ignore_finished flag
+
+- [ ] add access utils to the telegram_downloader class
+  - utils: find_chat
+  - utils: get_messages
+- [ ] load messages in a jupyter notebook
+  - show messages / format messages or somethign
+  - show chat names
 
 
-1) Connect to telethon client
-   1) authorise user if necessary
-2) get list of user chats
-3) 
+- [ ] figure out logging. 1) I want minimalistic logging by default. 2) I want to have
+  cool info 3) debug logging
+  - [x] new flag: --silent -> set level to warning
+  - [ ] use info for all cool info
+  - [ ] report the messages that are already in the db
+  - [ ] use debug for ALL debug info and steps
+  - [ ] save chat id to messages, I guess - check if I can filter
+
+- [ ] sanity check message duplicates (only complete duplicates - allow changed edits
+  history)
+- [ ] add media downloading -> aws s3
+
+- [ ] fix the correct way to find existing messages for the chat
+  - [ ] try in the notebook
+- [x] add sanity check: if timestamp < last message date for chat -> skip
+
+- [ ] write date range of downloaded messages to logging info
+

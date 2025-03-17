@@ -22,6 +22,7 @@ pydantic = ">=2"            # Data validation and settings management
 pydantic-settings = ">=2"   # Pydantic settings management
 apscheduler = "^3.11.0"
 tqdm = "*"                   # Progress bars
+pyyaml = "^6.0.2"
 
 [tool.poetry.group.extras.dependencies]
 # dependencies for extra features

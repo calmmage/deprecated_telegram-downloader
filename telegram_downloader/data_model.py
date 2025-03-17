@@ -1,7 +1,6 @@
 import json
 from datetime import datetime, timedelta
 
-from pydantic import BaseModel
 from telethon.types import Channel, Chat, User
 
 

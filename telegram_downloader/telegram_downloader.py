@@ -3,7 +3,6 @@ import random
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from re import M
 from typing import List
 
 from loguru import logger

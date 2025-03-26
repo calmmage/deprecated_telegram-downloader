@@ -4,10 +4,11 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from re import M
-from typing import List
+from typing import Any, Awaitable, Callable, List, Optional
 
 from loguru import logger
 from pymongo import MongoClient
+from pymongo.database import Database
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.types import Dialog, Message
@@ -35,20 +36,33 @@ class TelegramDownloader:
     # 5. save messages to a database
     """
 
-    def __init__(self, config_path: Path | str = Path("config.yaml"), **kwargs):
+    def __init__(
+        self, 
+        config_path: Path | str = Path("config.yaml"),
+        db: Optional[Database] = None,
+        client_provider: Optional[Callable[[int], Awaitable[TelegramClient]]] = None,
+        **kwargs
+    ):
         self.env = TelegramDownloaderEnvSettings(**kwargs)
 
         config_path = Path(config_path)
         self.config = TelegramDownloaderConfig.from_yaml(config_path, **kwargs)
 
-        self._db = None
+        self._db = db
+        if db is not None:
+            logger.debug("Using provided database connection")
+            
+        self._client_provider = client_provider
+        if client_provider is not None:
+            logger.debug("Using provided client provider function")
+            
         self._telethon_client = None
         self.reset_properties()
 
-    async def main(self, ignore_finished=False, chat_sample_size=None):
+    async def main(self, ignore_finished=False, chat_sample_size=None, user_id: Optional[int] = None):
         # 1. load list of chats
         logger.debug("Loading chats...")
-        chats = await self._get_chats()
+        chats = await self._get_chats(user_id)
         logger.info(f"Loaded {len(chats)} chats")
 
         if chat_sample_size is not None:
@@ -66,7 +80,7 @@ class TelegramDownloader:
 
             # 4. download messages as per config
             logger.info(f"Downloading messages for chat: {chat.name}")
-            messages = await self._download_messages(chat, chat_config, ignore_finished)
+            messages = await self._download_messages(chat, chat_config, ignore_finished, user_id)
             if messages:
                 min_date = min(msg.date for msg in messages).strftime("%d %b %Y")
                 max_date = max(msg.date for msg in messages).strftime("%d %b %Y")
@@ -89,19 +103,19 @@ class TelegramDownloader:
     def storage_mode(self):
         return self.config.storage_mode
 
-    async def _get_chat_list(self, client=None) -> List[Dialog]:
+    async def _get_chat_list(self, client=None, user_id: Optional[int] = None) -> List[Dialog]:
         logger.debug("Getting chat list from Telegram")
         if client is None:
-            client = await self.get_telethon_client()
+            client = await self.get_telethon_client(user_id)
         chats = await client.get_dialogs()
         logger.debug(f"Retrieved {len(chats)} dialogs from Telegram")
         return chats
 
     # ✅
-    async def _get_chats_from_client(self) -> List[ChatData]:
+    async def _get_chats_from_client(self, user_id: Optional[int] = None) -> List[ChatData]:
         logger.debug("Getting chats from client asynchronously")
         # Store chats in memory
-        client = await self.get_telethon_client()
+        client = await self.get_telethon_client(user_id)
         dialogs = await client.get_dialogs()
 
         logger.debug(f"Retrieved {len(dialogs)} chats")
@@ -280,7 +294,7 @@ class TelegramDownloader:
             raise ValueError(f"Invalid storage mode: {self.storage_mode}")
 
     # ✅
-    async def _get_chats(self) -> List[ChatData]:
+    async def _get_chats(self, user_id: Optional[int] = None) -> List[ChatData]:
         logger.debug("Getting chats asynchronously")
         if self.storage_mode == StorageMode.MONGO:
             if self._has_fresh_chats_in_db():
@@ -288,7 +302,7 @@ class TelegramDownloader:
                 return self._load_chats_from_db()
             else:
                 logger.debug("No fresh chats found, getting from client")
-                chats = await self._get_chats_from_client()
+                chats = await self._get_chats_from_client(user_id)
                 self._save_chats_to_db(chats)
                 # Set the refresh timestamp after successfully saving chats
                 self.chat_refresh_timestamp = datetime.now(timezone.utc)
@@ -299,7 +313,7 @@ class TelegramDownloader:
                 return self._get_chats_from_disk()  # ✅
             else:
                 logger.debug("No fresh chats found, getting from client")
-                chats = await self._get_chats_from_client()
+                chats = await self._get_chats_from_client(user_id)
                 self._save_chats_to_disk(chats)
                 # Set the refresh timestamp after successfully saving chats
                 self.chat_refresh_timestamp = datetime.now(timezone.utc)
@@ -421,7 +435,8 @@ class TelegramDownloader:
         return min_timestamp, max_timestamp
 
     async def _download_messages(
-        self, chat: ChatData, chat_config: ChatCategoryConfig, ignore_finished: bool = False
+        self, chat: ChatData, chat_config: ChatCategoryConfig, ignore_finished: bool = False,
+        user_id: Optional[int] = None
     ):
         logger.debug(f"Starting message download for chat: {chat.name}")
 
@@ -460,13 +475,14 @@ class TelegramDownloader:
                     logger.info(f"Skipping chat {chat.name}: marked as finished")
                     return []
                 logger.info("No existing messages found, performing full download")
-                messages = await self._download_all_messages(chat, chat_config)
+                messages = await self._download_all_messages(chat, chat_config, user_id)
             else:
                 logger.info(
                     f"Already have messages for chat {chat.name} from {min_timestamp} to {max_timestamp}"
                 )
                 messages = await self._download_messages_excluding_range(
-                    chat, chat_config, min_timestamp, max_timestamp, ignore_finished=ignore_finished
+                    chat, chat_config, min_timestamp, max_timestamp, 
+                    ignore_finished=ignore_finished, user_id=user_id
                 )
 
             # After successful download, mark as finished
@@ -479,7 +495,12 @@ class TelegramDownloader:
             # Don't mark as finished if there was an error
             return []
 
-    async def _download_all_messages(self, chat: ChatData, chat_config: ChatCategoryConfig):
+    async def _download_all_messages(
+        self, 
+        chat: ChatData, 
+        chat_config: ChatCategoryConfig,
+        user_id: Optional[int] = None
+    ):
         kwargs = {}
         if chat_config.backdays:
             config_min_date = datetime.now(timezone.utc) - timedelta(days=chat_config.backdays)
@@ -489,7 +510,7 @@ class TelegramDownloader:
         if chat_config.limit:
             kwargs["limit"] = chat_config.limit
 
-        return await self._load_messages(chat, **kwargs)
+        return await self._load_messages(chat, user_id=user_id, **kwargs)
 
     async def _download_messages_excluding_range(
         self,
@@ -498,11 +519,12 @@ class TelegramDownloader:
         min_timestamp: datetime,
         max_timestamp: datetime,
         ignore_finished: bool = False,
+        user_id: Optional[int] = None,
     ):
 
         logger.info(f"Getting messages newer than {max_timestamp}")
         # part 1: download newer messages
-        messages = await self._load_messages(chat, offset_date=max_timestamp, reverse=True)
+        messages = await self._load_messages(chat, offset_date=max_timestamp, reverse=True, user_id=user_id)
         logger.info(f"Downloaded {len(messages)} newer messages")
 
         logger.info(f"Getting messages older than {min_timestamp}")
@@ -515,28 +537,65 @@ class TelegramDownloader:
 
         messages.extend(
             await self._load_messages(
-                chat, offset_date=min_timestamp, reverse=False, limit=chat_config.limit
+                chat, offset_date=min_timestamp, reverse=False, limit=chat_config.limit, user_id=user_id
             )
         )
         # logger.info(f"Downloaded {len(messages)} messages total")
 
         return messages
 
-    async def get_telethon_client(self) -> TelegramClient:
-        if self._telethon_client is None:
-            if self.env.TELETHON_SESSION_STR:
-                self._telethon_client = TelegramClient(
-                    StringSession(self.env.TELETHON_SESSION_STR),
-                    api_id=self.env.TELEGRAM_API_ID,
-                    api_hash=self.env.TELEGRAM_API_HASH,
-                )
-                await self._telethon_client.start()
-            else:
-                self._telethon_client = await self._get_telethon_client()
+    async def get_telethon_client(self, user_id: Optional[int] = None) -> TelegramClient:
+        """Get a Telethon client.
+        
+        If a client_provider was provided during initialization, that will be used
+        to get a client for the specified user_id. Otherwise, falls back to creating
+        a new client using the configured settings.
+        
+        Args:
+            user_id: The user ID to get a client for. Only used when using client_provider.
+                    If None, uses the TELEGRAM_USER_ID from environment settings.
+                    
+        Returns:
+            TelegramClient: An initialized and connected Telethon client
+            
+        Raises:
+            RuntimeError: If client_provider is used but fails to return a valid client
+            ValueError: If required settings are missing when creating a new client
+        """
+        # Return existing client if already created
+        if self._telethon_client is not None:
+            return self._telethon_client
+            
+        # Try to get client from provider if available
+        if self._client_provider is not None:
+            resolved_user_id = user_id or int(self.env.TELEGRAM_USER_ID)
+            logger.debug(f"Getting client for user {resolved_user_id} from client provider")
+            try:
+                self._telethon_client = await self._client_provider(resolved_user_id)
+                if self._telethon_client is None:
+                    raise RuntimeError(f"Client provider returned None for user {resolved_user_id}")
+                return self._telethon_client
+            except Exception as e:
+                logger.error(f"Error getting client from provider: {e}")
+                raise RuntimeError(f"Failed to get client from provider: {e}") from e
+        
+        # Create new client using configured settings
+        logger.debug("No client provider, creating new client")
+        if self.env.TELETHON_SESSION_STR:
+            self._telethon_client = TelegramClient(
+                StringSession(self.env.TELETHON_SESSION_STR),
+                api_id=self.env.TELEGRAM_API_ID,
+                api_hash=self.env.TELEGRAM_API_HASH,
+            )
+            await self._telethon_client.start()
+        else:
+            self._telethon_client = await self._get_telethon_client()
+        
         return self._telethon_client
 
     async def _load_messages(
-        self, chat: ChatData, offset_date: datetime | None = None, reverse: bool = False, **kwargs
+        self, chat: ChatData, offset_date: datetime | None = None, reverse: bool = False, 
+        user_id: Optional[int] = None, **kwargs
     ) -> List[Message]:
         """Load messages from Telegram.
 
@@ -545,9 +604,10 @@ class TelegramDownloader:
             offset_date: Date to start loading messages from
             reverse: If True, load newer messages (from offset_date forward)
                     If False, load older messages (from offset_date backward)
+            user_id: Optional user ID to get the client for
             **kwargs: Additional arguments for iter_messages
         """
-        client = await self.get_telethon_client()
+        client = await self.get_telethon_client(user_id)
         messages = []
 
         try:
@@ -633,6 +693,7 @@ class TelegramDownloader:
     @property
     def db(self):
         if self._db is None:
+            logger.debug("No database connection provided, creating new connection")
             self._db = self._get_database()
         return self._db
 

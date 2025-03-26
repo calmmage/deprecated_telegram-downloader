@@ -80,6 +80,8 @@ numpy = "^2.2.1"
 
 [tool.poetry.group.test.dependencies]
 pytest = ">=6"
+pytest-asyncio = "^0.23.5"
+pytest-mock = "^3.14.0"
 #pytest-mongodb = "*"
 black = {extras = ["jupyter"], version = "^24.10.0"}
 flake8 = "^7.1.1"

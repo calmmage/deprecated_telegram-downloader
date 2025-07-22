@@ -11,7 +11,6 @@ packages=[
 
 [tool.poetry.dependencies]
 python = ">=3.11,<4.0"
-calmlib = { git = "https://github.com/calmmage/calmmage.git", branch = "main", subdirectory = "src/calmlib" }
 loguru = ">=0.7"
 # for parsing version
 toml = ">=0.10"
@@ -22,6 +21,7 @@ pydantic = ">=2"            # Data validation and settings management
 pydantic-settings = ">=2"   # Pydantic settings management
 
 [tool.poetry.group.extras.dependencies]
+calmlib = { git = "https://github.com/calmmage/calmmage.git", branch = "main", subdirectory = "src/calmlib" }
 # dependencies for extra features
 
 # Main

@@ -1,3 +1,7 @@
+---
+MOVED TO MAIN CALMMAGE REPO AS A TOOL https://github.com/calmmage/calmmage/tree/main/tools/telegram_donwloader
+---
+
 # Telegram Downloader
 
 ## setup
